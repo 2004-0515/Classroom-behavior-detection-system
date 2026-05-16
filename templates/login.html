@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 课堂行为检测控制台</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="login-body">
+    <div class="ambient-layer ambient-left"></div>
+    <div class="ambient-layer ambient-right"></div>
+
+    <main class="login-layout">
+        <section class="login-hero">
+            <div class="login-badge">Classroom Vision Console</div>
+            <div class="login-hero-copy">
+                <p class="eyebrow">校园视觉分析工作台</p>
+                <h1>课堂行为检测控制台</h1>
+                <p class="login-copy">以白色基底、柔和光影和安静层次重构的演示界面，围绕图片、视频与实时巡检，保持清晰的检测流程与更舒适的展示观感。</p>
+            </div>
+            <div class="login-metrics">
+                <div class="login-metric">
+                    <strong>4</strong>
+                    <span>检测模式</span>
+                </div>
+                <div class="login-metric">
+                    <strong>AI</strong>
+                    <span>行为识别</span>
+                </div>
+                <div class="login-metric">
+                    <strong>Live</strong>
+                    <span>实时巡检</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="login-card">
+            <div class="login-card-head">
+                <p class="eyebrow">Administrator Access</p>
+                <h2>管理员登录</h2>
+                <p class="login-card-copy">进入控制台后，可直接切换检测模式、预览结果并回看最近任务。</p>
+            </div>
+            <form method="POST" class="login-form">
+                {% if setup_required %}
+                <div class="inline-error">{{ setup_reason or '当前工作区尚未初始化管理员账号。' }} 请先运行 `python scripts/init_local_admin.py --username <账号> --password <密码>`。</div>
+                {% endif %}
+                <label class="field">
+                    <span>账号</span>
+                    <input class="text-input" type="text" name="username" placeholder="请输入管理员账号" autocomplete="username" required>
+                </label>
+                <label class="field">
+                    <span>密码</span>
+                    <input class="text-input" type="password" name="password" placeholder="请输入密码" autocomplete="current-password" required>
+                </label>
+                {% if error %}
+                <div class="inline-error">{{ error }}</div>
+                {% endif %}
+                <button class="primary-btn block-btn" type="submit" {% if setup_required %}disabled{% endif %}>进入控制台</button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

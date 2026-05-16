@@ -1,0 +1,893 @@
+/* 全局样式 */
+:root {
+    --primary-color: #0d6efd;
+    --success-color: #198754;
+    --danger-color: #dc3545;
+    --warning-color: #ffc107;
+    --info-color: #0dcaf0;
+    --dark-color: #212529;
+    --light-color: #f8f9fa;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* LEGACY FILE: this stylesheet belongs to the retired prototype UI, not the current app shell. */
+body {
+    font-family: 'Microsoft YaHei', 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #c8f1cb 0%, #aee6b0 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+}
+
+/* 导航栏 */
+.navbar {
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    background-color: #c8a885 !important; /* 淡棕色，和卡片配套 */
+}
+
+.navbar-brand {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+/* 卡片样式 */
+.card {
+    border: none;
+    border-radius: 15px;
+    overflow: hidden;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.card-header {
+    border-bottom: none;
+    padding: 1rem 1.5rem;
+    font-weight: 600;
+    background-color: #633b21 !important;
+    color: #ffffff !important;
+}
+
+
+/* 按钮样式 */
+.mode-btn {
+    border-width: 2px;
+    font-weight: 600;
+    padding: 0.75rem;
+    transition: all 0.3s ease;
+
+    /* 按钮默认颜色：淡棕色 */
+    background: #f5e8d9 !important;
+    border-color: #d9b38c !important;
+    color: #5c3c24 !important;
+}
+
+/* 鼠标放上去的颜色（深一点） */
+.mode-btn:hover {
+    transform: scale(1.05);
+    background: #e6ccb2 !important;
+    border-color: #c4a484 !important;
+}
+
+/* 按钮被选中时的颜色 */
+.mode-btn.active {
+    background: #d9b38c !important;
+    color: #fff !important;
+    border-color: #d9b38c !important;
+}
+
+.mode-btn:hover {
+    transform: scale(1.05);
+}
+
+.mode-btn.active {
+    background-color: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+#selectFileBtn {
+    background-color: #43a047 !important; /* 改成和你渐变绿背景配套的绿色 */
+    border-color: #388e3c !important;
+    color: white !important;
+}
+
+#selectFileBtn:hover {
+    background-color: #388e3c !important;
+    border-color: #2e7d32 !important;
+}
+/* 上传区域 */
+.upload-area {
+    border: 3px dashed #ccc;
+    border-radius: 15px;
+    background: #f8f9fa;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.upload-area:hover {
+    border-color: var(--primary-color);
+    background: #e7f1ff;
+}
+
+.upload-area.drag-over {
+    border-color: var(--success-color);
+    background: #d1f2eb;
+}
+
+/* 文件列表 */
+.file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    background: #f8f9fa;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.file-item:hover {
+    background: #e9ecef;
+    transform: translateX(5px);
+}
+
+.file-item i {
+    font-size: 1.5rem;
+    margin-right: 1rem;
+}
+
+.file-item .remove-file {
+    cursor: pointer;
+    color: var(--danger-color);
+    transition: transform 0.2s ease;
+}
+
+.file-item .remove-file:hover {
+    transform: scale(1.2);
+}
+
+/* 摄像头容器 */
+.webcam-container {
+    position: relative;
+}
+
+#webcamFeed {
+    max-width: 100%;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* 结果显示 */
+.result-image {
+    max-width: 100%;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    margin-bottom: 1rem;
+}
+
+.detection-badge {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    margin: 0.25rem;
+    border-radius: 20px;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.student-badge {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.teacher-badge {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    color: white;
+}
+
+/* 统计信息 */
+.info-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.info-item:last-child {
+    border-bottom: none;
+}
+
+.info-item i {
+    font-size: 1.5rem;
+    margin-right: 1rem;
+    width: 30px;
+    text-align: center;
+}
+
+.info-item span {
+    flex: 1;
+    font-weight: 500;
+}
+
+/* 行为统计列表 */
+.behavior-stat-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.behavior-stat-item:last-child {
+    border-bottom: none;
+}
+
+.behavior-name {
+    font-weight: 600;
+    color: var(--dark-color);
+}
+
+.behavior-count {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: var(--primary-color);
+}
+
+.behavior-percentage {
+    font-size: 0.9rem;
+    color: var(--success-color);
+    margin-left: 0.5rem;
+}
+
+/* 进度条 */
+.progress {
+    height: 30px;
+    border-radius: 15px;
+    background: #e9ecef;
+}
+
+.progress-bar {
+    background: linear-gradient(90deg, var(--primary-color), var(--success-color));
+    font-weight: bold;
+    line-height: 30px;
+}
+
+/* 图表样式 */
+canvas {
+    max-height: 250px;
+}
+
+/* 加载动画 */
+.spinner-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+}
+
+.spinner-border {
+    width: 3rem;
+    height: 3rem;
+    border-width: 0.3rem;
+}
+
+/* 响应式设计 */
+@media (max-width: 992px) {
+    .col-lg-3, .col-lg-6 {
+        margin-bottom: 1rem;
+    }
+}
+
+@media (max-width: 768px) {
+    .navbar-brand {
+        font-size: 1.2rem;
+    }
+    
+    .card-header h5 {
+        font-size: 1rem;
+    }
+    
+    .mode-btn {
+        font-size: 0.9rem;
+        padding: 0.5rem;
+    }
+}
+
+/* 动画效果 */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.fade-in {
+    animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+    width: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(135deg, var(--primary-color), var(--success-color));
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}
+
+/* 工具提示 */
+.tooltip {
+    font-size: 0.9rem;
+}
+
+/* 徽章样式 */
+.badge {
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+}
+
+/* 表格样式 */
+.table {
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.table thead {
+    background: linear-gradient(135deg, var(--primary-color), var(--info-color));
+    color: white;
+}
+
+/* 模态框样式 */
+.modal-content {
+    border-radius: 15px;
+    border: none;
+}
+
+.modal-header {
+    background: linear-gradient(135deg, var(--primary-color), var(--info-color));
+    color: white;
+    border-top-left-radius: 15px;
+    border-top-right-radius: 15px;
+}
+
+/* 成功消息 */
+.alert {
+    border-radius: 10px;
+    border: none;
+}
+
+.alert-success {
+    background: linear-gradient(135deg, #d4edda, #c3e6cb);
+    color: #155724;
+}
+
+.alert-danger {
+    background: linear-gradient(135deg, #f8d7da, #f5c6cb);
+    color: #721c24;
+}
+
+.alert-info {
+    background: linear-gradient(135deg, #d1ecf1, #bee5eb);
+    color: #0c5460;
+}
+
+/* 批量结果网格 */
+.batch-results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.batch-result-item {
+    background: white;
+    border-radius: 10px;
+    padding: 1rem;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease;
+}
+
+.batch-result-item:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
+}
+
+.batch-result-item img {
+    width: 100%;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}
+
+.batch-result-item h6 {
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 实时统计数字 */
+.realtime-stat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem;
+    margin: 0.25rem 0;
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.realtime-stat:hover {
+    transform: translateX(5px);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.stat-label {
+    font-weight: 600;
+    color: var(--dark-color);
+}
+
+.stat-value {
+    font-size: 1.2rem;
+    font-weight: bold;
+    background: linear-gradient(135deg, var(--primary-color), var(--success-color));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* 加载骨架屏 */
+.skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: loading 1.5s infinite;
+    border-radius: 4px;
+}
+
+@keyframes loading {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* 空状态 */
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: #6c757d;
+}
+
+.empty-state i {
+    font-size: 4rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+.empty-state h5 {
+    margin-bottom: 0.5rem;
+}
+
+.empty-state p {
+    font-size: 0.9rem;
+}
+
+/* 模型信息展示 */
+.badge-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.models-details .card {
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+
+.current-models-info .badge {
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+}
+
+/* 模型选择信息提示 */
+#studentModelInfo,
+#teacherModelInfo {
+    display: block;
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: #6c757d;
+    min-height: 1.2rem;
+}
+
+/* 模态框增强 */
+.modal-body {
+    font-size: 0.95rem;
+}
+
+.modal .card {
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.modal .card-header {
+    font-weight: 600;
+}
+
+.modal .badge {
+    font-size: 0.8rem;
+}
+
+/* 可点击图片样式 */
+.result-image-container {
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+    border-radius: 10px;
+}
+
+.clickable-image {
+    cursor: pointer;
+    transition: transform 0.3s ease, filter 0.3s ease;
+}
+
+.clickable-image:hover {
+    transform: scale(1.02);
+    filter: brightness(0.9);
+}
+
+.image-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    font-size: 1.5rem;
+    flex-direction: column;
+    pointer-events: none; /* 不拦截鼠标点击，让点击落到图片上 */
+}
+
+.result-image-container:hover .image-overlay {
+    opacity: 1;
+}
+
+.image-overlay i {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+/* 批量结果图片叠加层 */
+.batch-result-item {
+    position: relative;
+}
+
+.image-overlay-mini {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    font-size: 2rem;
+    border-radius: 8px;
+    pointer-events: none; /* 不拦截鼠标点击，让点击落到图片上 */
+}
+
+.batch-result-item:hover .image-overlay-mini {
+    opacity: 1;
+}
+
+/* 图片查看器 */
+#viewerImage {
+    border: 2px solid #dee2e6;
+    background: #f8f9fa;
+}
+
+.detection-filter-list {
+    max-height: 45vh;
+    overflow-y: auto;
+    padding-right: 10px;
+}
+
+.detection-filter-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.detection-filter-list::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 3px;
+}
+
+.detection-info-box {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+}
+
+/* 历史记录 */
+.history-list {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.history-item {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    cursor: pointer;
+}
+
+.history-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* 设置面板 */
+.settings-section {
+    margin-bottom: 1.5rem;
+}
+
+.settings-section h6 {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e9ecef;
+}
+
+.form-check {
+    padding: 0.5rem;
+    border-radius: 5px;
+    transition: background 0.2s ease;
+}
+
+.form-check:hover {
+    background: #f8f9fa;
+}
+
+/* 任务详情 */
+.task-details .card {
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.task-details .progress {
+    height: 20px;
+    border-radius: 10px;
+    background-color: #e9ecef;
+}
+
+.task-details .progress-bar {
+    background: linear-gradient(90deg, #007bff, #0056b3);
+    border-radius: 10px;
+}
+
+.task-details h3 {
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+}
+
+.task-details .text-center {
+    padding: 1rem;
+    border-radius: 8px;
+    background: #f8f9fa;
+}
+
+/* ========================================
+   图片查看器 Canvas
+   ======================================== */
+#detectionCanvas {
+    display: block;
+    margin: 0;
+    background: #f8f9fa;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    max-width: 100%;
+}
+
+#canvasContainer {
+    text-align: center;
+    background: #f8f9fa;
+    padding: 0; /* 让画布区域真正铺满容器 */
+    border-radius: 8px;
+    width: 100%;
+    min-height: 60vh;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    overflow: hidden;
+}
+
+/* 让 Canvas 在容器内自适应铺满（按 contain 保持比例） */
+#canvasContainer > #detectionCanvas {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 78vh;
+    object-fit: contain;
+}
+
+/* 检测框列表项 */
+.detection-item {
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.detection-item:hover {
+    transform: translateX(3px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.detection-item.active {
+    background: #e3f2fd !important;
+    border-color: #2196f3 !important;
+}
+
+.detection-checkbox {
+    cursor: pointer;
+    margin-top: 0.25rem;
+}
+
+.detection-category h6 {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+/* 检测信息卡片 */
+#detectionInfo {
+    font-size: 0.9rem;
+    border: 1px solid #dee2e6;
+}
+
+#detectionInfo hr {
+    margin: 0.5rem 0;
+    border-color: #dee2e6;
+}
+
+/* 筛选按钮组 */
+.modal-body .btn-outline-primary,
+.modal-body .btn-outline-secondary,
+.modal-body .btn-outline-danger {
+    font-size: 0.875rem;
+    padding: 0.5rem;
+    transition: all 0.2s ease;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+/* 右侧面板避免溢出 */
+#imageViewerModal .col-lg-3,
+#imageViewerModal .col-md-4 {
+    overflow-x: hidden;
+    max-width: 100%;
+    padding-left: 12px; /* 避免内容“顶到”左边界造成视觉溢出 */
+    padding-right: 12px;
+}
+
+/* 修复右侧面板内容在某些情况下出现负margin导致越界 */
+#imageViewerModal .detection-filter-list,
+#imageViewerModal #detectionStats,
+#imageViewerModal #detectionDetails {
+    width: 100%;
+    min-width: 0;
+}
+
+#imageViewerModal .modal-body {
+    overflow-x: hidden;
+}
+
+/* 强制右侧所有子元素不超出容器宽度 */
+#imageViewerModal .col-lg-3 *,
+#imageViewerModal .col-md-4 * {
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+#imageViewerModal .form-check-label {
+    display: block;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+#imageViewerModal .badge {
+    max-width: 100%;
+}
+
+.modal-body .btn-outline-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,123,255,0.3);
+}
+
+.modal-body .btn-outline-secondary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(108,117,125,0.3);
+}
+
+.modal-body .btn-outline-danger:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(220,53,69,0.3);
+}
+
+/* 滚动条样式 */
+.detection-filter-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.detection-filter-list::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+}
+
+.detection-filter-list::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 10px;
+}
+
+.detection-filter-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* 模态框动画 */
+.modal.fade .modal-dialog {
+    transition: transform 0.3s ease-out;
+}
+
+.modal.show .modal-dialog {
+    transform: none;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    #detectionCanvas {
+        max-width: 100%;
+        height: auto;
+    }
+    
+    .detection-filter-list {
+        max-height: 300px !important;
+    }
+}

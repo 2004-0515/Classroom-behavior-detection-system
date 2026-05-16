@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>课堂行为检测控制台</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260514-webcam-fix') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div id="app" class="app-shell" data-username="{{ username }}">
+        <div class="ambient-layer ambient-left"></div>
+        <div class="ambient-layer ambient-right"></div>
+
+        <header class="shell-topbar panel-shell">
+            <div class="shell-brand">
+                <div class="brand-mark"><span>课</span></div>
+                <div class="brand-copy">
+                    <p class="brand-tag">Classroom Vision Console</p>
+                    <h1>课堂行为检测</h1>
+                    <p>为答辩展示优化的轻白质感工作台</p>
+                </div>
+            </div>
+            <nav class="mode-tabs">
+                <button class="nav-item active" data-mode="image">单图检测</button>
+                <button class="nav-item" data-mode="batch">批量检测</button>
+                <button class="nav-item" data-mode="video">视频检测</button>
+                <button class="nav-item" data-mode="webcam">实时摄像头</button>
+            </nav>
+            <div class="shell-actions">
+                <div class="topbar-note">
+                    <span class="note-dot"></span>
+                    <span>演示视图</span>
+                </div>
+                <button id="settingsBtn" class="ghost-btn" type="button">设置</button>
+                <div class="user-chip">
+                    <span>{{ username }}</span>
+                    <button id="logoutBtn" class="ghost-btn">退出</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="shell-main">
+            <aside class="control-rail">
+                <section class="panel-shell info-panel rail-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="eyebrow">当前模式</p>
+                            <h2 id="workspaceTitle">单图检测工作台</h2>
+                        </div>
+                        <span id="modeBadge" class="status-chip">单图</span>
+                    </div>
+                    <p id="modeIntro" class="panel-lead">围绕单张图片的快速检测与结果回看，适合展示识别效果。</p>
+                    <div id="overviewHighlights" class="overview-strip"></div>
+                </section>
+
+                <section class="panel-shell rail-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="eyebrow">Detection Params</p>
+                            <h2>检测参数</h2>
+                        </div>
+                        <button id="saveParamsBtn" class="ghost-btn">保存</button>
+                    </div>
+                    <div class="field-grid">
+                        <label class="field">
+                            <span>置信度</span>
+                            <input id="confidenceInput" type="range" min="0.1" max="0.9" step="0.05" value="0.25">
+                            <strong id="confidenceLabel">0.25</strong>
+                        </label>
+                        <label class="field">
+                            <span>IOU</span>
+                            <input id="iouInput" type="range" min="0.1" max="0.9" step="0.05" value="0.45">
+                            <strong id="iouLabel">0.45</strong>
+                        </label>
+                        <label class="field">
+                            <span>视频跳帧</span>
+                            <input id="frameSkipInput" type="number" min="0" max="10" value="2">
+                        </label>
+                        <label class="field">
+                            <span>摄像头索引</span>
+                            <input id="cameraIndexInput" type="number" min="0" max="10" value="0">
+                        </label>
+                    </div>
+                </section>
+
+                <section class="panel-shell rail-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="eyebrow">Model Setup</p>
+                            <h2>模型管理</h2>
+                        </div>
+                        <div class="inline-actions">
+                            <button id="currentModelDetailsBtn" class="ghost-btn" type="button">当前模型</button>
+                            <button id="scanModelsBtn" class="ghost-btn">扫描</button>
+                        </div>
+                    </div>
+                    <label class="field">
+                        <span>学生模型</span>
+                        <select id="studentModelSelect"></select>
+                    </label>
+                    <label class="field">
+                        <span>教师/人头模型</span>
+                        <select id="teacherModelSelect"></select>
+                    </label>
+                    <button id="applyModelsBtn" class="primary-btn block-btn">应用模型</button>
+                    <button id="modelLibraryBtn" class="ghost-btn block-btn" type="button">查看候选模型库</button>
+                    <div id="modelMeta" class="meta-text"></div>
+                </section>
+            </aside>
+
+            <main class="workspace">
+                <section class="workflow-grid">
+                    <article class="panel-shell upload-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Step 01</p>
+                                <h2>输入与启动</h2>
+                            </div>
+                            <span class="panel-tag">主操作区</span>
+                        </div>
+                        <p id="dropzoneHint" class="panel-lead">拖入图片、批量图片或视频后即可开始检测。实时模式无需上传。</p>
+                        <div id="dropzone" class="dropzone">
+                            <input id="fileInput" type="file" hidden>
+                            <div class="dropzone-copy">
+                                <h3 id="dropzoneTitle">把素材拖放到这里</h3>
+                                <p>保持单线流程，从导入到预览一屏完成。</p>
+                                <button id="pickFileBtn" class="primary-btn">选择文件</button>
+                            </div>
+                        </div>
+                        <div id="selectedFiles" class="list-stack"></div>
+                        <div id="webcamControls" class="inline-actions hidden">
+                            <button id="probeWebcamBtn" class="ghost-btn" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('probeWebcam', this)">诊断摄像头</button>
+                            <button id="startWebcamBtn" class="primary-btn" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('startWebcam', this)">启动摄像头</button>
+                            <button id="stopWebcamBtn" class="danger-btn hidden" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('stopWebcam', this)">停止摄像头</button>
+                        </div>
+                        <div id="webcamDiagnostics" class="meta-text hidden"></div>
+                        <div class="stacked-actions">
+                            <button id="runBtn" class="primary-btn block-btn">开始检测</button>
+                            <div class="inline-actions split-actions">
+                                <button id="stopTaskBtn" class="danger-btn hidden" type="button">停止视频任务</button>
+                                <button id="randomCallBtn" class="ghost-btn hidden" type="button">随机点名</button>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel-shell preview-panel preview-focus">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Step 02</p>
+                                <h2>结果预览</h2>
+                            </div>
+                            <div class="inline-actions">
+                                <button id="showOriginalBtn" class="ghost-btn">原始</button>
+                                <button id="showAnnotatedBtn" class="ghost-btn active">检测结果</button>
+                            </div>
+                        </div>
+                        <p class="panel-lead">主预览区保持安静和完整，优先展示识别结果与批量切换。</p>
+                        <div class="inline-actions preview-toolbar">
+                            <button id="openDetailBtn" class="ghost-btn" type="button">细看当前结果</button>
+                            <button id="downloadAssetBtn" class="ghost-btn" type="button">下载当前资源</button>
+                        </div>
+                        <div class="preview-surface">
+                            <img id="resultImage" alt="result preview">
+                            <video id="resultVideo" class="hidden" controls playsinline></video>
+                            <div id="emptyState" class="empty-state">
+                                <h3>等待分析开始</h3>
+                                <p>完成素材导入或启动巡检后，这里会展示处理结果。</p>
+                            </div>
+                        </div>
+                        <div id="videoMeta" class="meta-row"></div>
+                        <div id="currentResultTags" class="tag-row result-tags"></div>
+                        <div id="resultGallery" class="result-gallery hidden"></div>
+                    </article>
+                </section>
+
+                <section id="webcamLiveBanner" class="panel-shell live-banner hidden">
+                    <div class="live-banner-head">
+                        <div>
+                            <p class="eyebrow">Live Patrol</p>
+                            <h2>实时巡检摘要</h2>
+                        </div>
+                        <span id="liveBannerStatus" class="pill">待启动</span>
+                    </div>
+                    <div id="liveBannerStats" class="live-banner-grid"></div>
+                </section>
+
+                <section class="support-grid">
+                    <article class="panel-shell compact-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Runtime</p>
+                                <h2>实时状态</h2>
+                            </div>
+                        </div>
+                        <div id="systemStats" class="stat-grid"></div>
+                    </article>
+                    <article class="panel-shell compact-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Current Task</p>
+                                <h2>当前任务</h2>
+                            </div>
+                        </div>
+                        <div id="taskState" class="task-state-card"></div>
+                    </article>
+                    <article class="panel-shell compact-panel notifications-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Updates</p>
+                                <h2>通知</h2>
+                            </div>
+                        </div>
+                        <div id="notifications" class="notification-list"></div>
+                    </article>
+                </section>
+
+                <section class="analysis-grid">
+                    <article class="panel-shell analysis-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Step 03</p>
+                                <h2>任务分析</h2>
+                            </div>
+                            <a id="reportLink" class="ghost-link" href="#" target="_blank">打开报告</a>
+                        </div>
+                        <p class="panel-lead">聚焦检测数量、置信度与行为分布，方便演示过程快速讲解。</p>
+                        <div id="analysisNarrative" class="analysis-narrative"></div>
+                        <div id="speechTemplate" class="speech-template"></div>
+                        <div id="summaryCards" class="summary-cards"></div>
+                        <div class="chart-grid">
+                            <div class="chart-card">
+                                <div class="chart-card-head">
+                                    <h3>学生行为</h3>
+                                    <div id="studentChartFocus" class="chart-focus"></div>
+                                </div>
+                                <canvas id="studentChart"></canvas>
+                            </div>
+                            <div class="chart-card">
+                                <div class="chart-card-head">
+                                    <h3>教师/人头行为</h3>
+                                    <div id="teacherChartFocus" class="chart-focus"></div>
+                                </div>
+                                <canvas id="teacherChart"></canvas>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel-shell history-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="eyebrow">Archive</p>
+                                <h2>历史记录</h2>
+                            </div>
+                            <button id="refreshHistoryBtn" class="ghost-btn">刷新</button>
+                        </div>
+                        <p class="panel-lead">优先展示类型、时间与结果摘要，适合回看演示素材。</p>
+                        <div class="history-toolbar">
+                            <input id="historyFilter" class="text-input" placeholder="筛选任务类型或文件名">
+                            <div class="history-controls">
+                                <select id="historyModeFilter" class="text-input">
+                                    <option value="all">全部模式</option>
+                                    <option value="image">单图检测</option>
+                                    <option value="batch">批量检测</option>
+                                    <option value="video">视频检测</option>
+                                    <option value="webcam">实时摄像头</option>
+                                </select>
+                                <select id="historySort" class="text-input">
+                                    <option value="recent">最新优先</option>
+                                    <option value="detections">检测数优先</option>
+                                    <option value="duration">处理时长优先</option>
+                                </select>
+                            </div>
+                            <label class="history-toggle">
+                                <input id="historyShowcaseOnly" type="checkbox">
+                                <span>只看可展示素材</span>
+                            </label>
+                            <div class="history-batchbar">
+                                <span id="historySelectionMeta" class="history-selection-meta">未选择任务</span>
+                                <div class="history-batch-actions">
+                                    <button id="historySelectShowcaseBtn" class="ghost-btn" type="button">选中当前可展示</button>
+                                    <button id="historyClearSelectedBtn" class="ghost-btn" type="button">清空选择</button>
+                                    <button id="historyExportSelectedBtn" class="ghost-btn" type="button">导出选中报告</button>
+                                </div>
+                            </div>
+                            <div class="history-shortcuts">
+                                <button id="historyLatestBtn" class="ghost-btn" type="button">定位最新</button>
+                                <button id="historyTopBtn" class="ghost-btn" type="button">定位高检测</button>
+                            </div>
+                        </div>
+                        <div id="historyList" class="history-list"></div>
+                    </article>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <div id="settingsModal" class="dialog-backdrop hidden" aria-hidden="true">
+        <section class="dialog-card">
+            <header class="dialog-head">
+                <div>
+                    <p class="eyebrow">Workspace Settings</p>
+                    <h2>界面设置</h2>
+                </div>
+                <button class="icon-btn dialog-close" data-close-dialog="settingsModal" type="button">关闭</button>
+            </header>
+            <div class="dialog-body dialog-form">
+                <label class="field">
+                    <span>默认检测模式</span>
+                    <select id="settingDefaultMode" class="text-input">
+                        <option value="image">单图检测</option>
+                        <option value="batch">批量检测</option>
+                        <option value="video">视频检测</option>
+                        <option value="webcam">实时摄像头</option>
+                    </select>
+                </label>
+                <label class="switch-row">
+                    <input id="settingAutoScan" type="checkbox">
+                    <span>启动时自动扫描模型</span>
+                </label>
+                <label class="switch-row">
+                    <input id="settingShowConfidence" type="checkbox">
+                    <span>显示检测置信度</span>
+                </label>
+                <label class="switch-row">
+                    <input id="settingShowLabels" type="checkbox">
+                    <span>显示检测框标签</span>
+                </label>
+                <div id="settingsFeedback" class="inline-note">这些设置会保存在当前项目配置中。</div>
+            </div>
+            <footer class="dialog-foot">
+                <button id="resetSettingsBtn" class="ghost-btn" type="button">重置设置</button>
+                <button id="saveSettingsBtn" class="primary-btn" type="button">保存设置</button>
+            </footer>
+        </section>
+    </div>
+
+    <div id="modelDetailsModal" class="dialog-backdrop hidden" aria-hidden="true">
+        <section class="dialog-card wide-dialog">
+            <header class="dialog-head">
+                <div>
+                    <p class="eyebrow">Loaded Models</p>
+                    <h2>当前模型信息</h2>
+                </div>
+                <button class="icon-btn dialog-close" data-close-dialog="modelDetailsModal" type="button">关闭</button>
+            </header>
+            <div id="modelDetailsContent" class="dialog-body model-detail-grid"></div>
+        </section>
+    </div>
+
+    <div id="modelLibraryModal" class="dialog-backdrop hidden" aria-hidden="true">
+        <section class="dialog-card wide-dialog">
+            <header class="dialog-head">
+                <div>
+                    <p class="eyebrow">Model Inventory</p>
+                    <h2>候选模型库</h2>
+                </div>
+                <button class="icon-btn dialog-close" data-close-dialog="modelLibraryModal" type="button">关闭</button>
+            </header>
+            <div id="modelLibraryContent" class="dialog-body model-library-list"></div>
+        </section>
+    </div>
+
+    <div id="detailModal" class="dialog-backdrop hidden" aria-hidden="true">
+        <section class="dialog-card xwide-dialog">
+            <header class="dialog-head">
+                <div>
+                    <p class="eyebrow">Detection Inspector</p>
+                    <h2 id="detailModalTitle">结果细看</h2>
+                </div>
+                <button class="icon-btn dialog-close" data-close-dialog="detailModal" type="button">关闭</button>
+            </header>
+            <div class="dialog-body detail-layout">
+                <div class="detail-canvas-wrap">
+                    <canvas id="detailCanvas"></canvas>
+                </div>
+                <aside class="detail-sidebar">
+                    <div id="detailSummary" class="meta-text"></div>
+                    <div class="inline-actions split-actions">
+                        <button id="detailShowAllBtn" class="ghost-btn" type="button">显示全部</button>
+                        <button id="detailHideAllBtn" class="ghost-btn" type="button">隐藏全部</button>
+                    </div>
+                    <div id="detailDetectionList" class="detail-detection-list"></div>
+                </aside>
+            </div>
+            <footer class="dialog-foot">
+                <button id="downloadDetailBtn" class="primary-btn" type="button">下载当前视图</button>
+            </footer>
+        </section>
+    </div>
+
+    <div id="randomCallModal" class="dialog-backdrop hidden" aria-hidden="true">
+        <section class="dialog-card wide-dialog">
+            <header class="dialog-head">
+                <div>
+                    <p class="eyebrow">Random Call</p>
+                    <h2>随机点名结果</h2>
+                </div>
+                <button class="icon-btn dialog-close" data-close-dialog="randomCallModal" type="button">关闭</button>
+            </header>
+            <div class="dialog-body random-call-layout">
+                <div class="detail-canvas-wrap">
+                    <canvas id="randomCallCanvas"></canvas>
+                </div>
+                <div id="randomCallMeta" class="meta-text"></div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        window.classroomAppControlsInvoke = async function (action, button) {
+            const diagnostics = document.getElementById("webcamDiagnostics");
+            const notifications = document.getElementById("notifications");
+            const originalLabel = button ? button.dataset.originalLabel || button.textContent : "";
+            if (button && !button.dataset.originalLabel) {
+                button.dataset.originalLabel = originalLabel;
+            }
+            if (button) {
+                button.textContent = action === "startWebcam" ? "正在启动..." : action === "stopWebcam" ? "正在停止..." : "正在诊断...";
+            }
+            if (diagnostics) {
+                diagnostics.classList.remove("hidden");
+                diagnostics.textContent = "按钮点击已触发，正在进入前端处理流程...";
+            }
+            try {
+                const controls = window.classroomAppControls;
+                if (!controls || typeof controls[action] !== "function") {
+                    throw new Error("前端控制脚本尚未就绪，请强制刷新页面后重试");
+                }
+                await controls[action]();
+            } catch (error) {
+                if (diagnostics) {
+                    diagnostics.textContent = `前端点击已收到，但执行失败：${error.message}`;
+                }
+                if (notifications) {
+                    notifications.innerHTML = `<article class="notification-item danger"><strong>前端执行失败</strong><small>${error.message}</small></article>`;
+                }
+                throw error;
+            } finally {
+                if (button) {
+                    button.textContent = button.dataset.originalLabel || originalLabel;
+                }
+            }
+        };
+    </script>
+    <script type="module" src="{{ url_for('static', filename='app/main.js', v='20260514-webcam-fix-3') }}"></script>
+</body>
+</html>
