@@ -19,22 +19,22 @@ def test_scan_models():
     models_info = BehaviorDetector.scan_models_directory(str(Config.MODEL_FOLDER))
     
     if not models_info:
-        print("❌ 未找到任何模型文件")
+        print("[FAIL] 未找到任何模型文件")
         print(f"   请将 .pt 模型文件放入 {Config.MODEL_FOLDER} 目录")
         return False
     
-    print(f"\n✅ 找到 {len(models_info)} 个模型文件：\n")
+    print(f"\n[OK] 找到 {len(models_info)} 个模型文件：\n")
     
     for i, model in enumerate(models_info, 1):
         print(f"模型 {i}: {model['filename']}")
         print("-" * 40)
         
         if 'error' in model:
-            print(f"  ❌ 加载失败: {model['error']}")
+            print(f"  [FAIL] 加载失败: {model['error']}")
         else:
-            print(f"  📁 文件大小: {model['file_size_mb']} MB")
-            print(f"  🔢 类别数量: {model['num_classes']}")
-            print(f"  📝 类别列表:")
+            print(f"  [INFO] 文件大小: {model['file_size_mb']} MB")
+            print(f"  [INFO] 类别数量: {model['num_classes']}")
+            print(f"  [INFO] 类别列表:")
             
             # 分行显示类别
             classes = model['classes']
@@ -58,7 +58,7 @@ def test_model_loading():
     teacher_exists = Path(Config.TEACHER_MODEL_PATH).exists()
     
     if not student_exists and not teacher_exists:
-        print("❌ 未找到模型文件")
+        print("[FAIL] 未找到模型文件")
         print(f"   学生模型: {Config.STUDENT_MODEL_PATH}")
         print(f"   人头模型: {Config.TEACHER_MODEL_PATH}")
         return False
@@ -72,35 +72,35 @@ def test_model_loading():
     
     # 测试获取学生模型信息
     if detector.student_model:
-        print("\n📊 学生模型信息：")
+        print("\n[INFO] 学生模型信息：")
         print("-" * 40)
         student_info = detector.get_model_info('student')
         
         if student_info.get('loaded'):
-            print(f"✅ 加载成功")
-            print(f"📁 路径: {student_info['path']}")
-            print(f"🔢 类别数量: {student_info['num_classes']}")
-            print(f"📝 类别列表: {', '.join(student_info['classes'])}")
+            print(f"[OK] 加载成功")
+            print(f"[INFO] 路径: {student_info['path']}")
+            print(f"[INFO] 类别数量: {student_info['num_classes']}")
+            print(f"[INFO] 类别列表: {', '.join(student_info['classes'])}")
         else:
-            print(f"❌ 加载失败: {student_info.get('error')}")
+            print(f"[FAIL] 加载失败: {student_info.get('error')}")
     else:
-        print("\n⚠️  学生模型未加载")
+        print("\n[WARN] 学生模型未加载")
     
     # 测试获取人头模型信息
     if detector.teacher_model:
-        print("\n📊 人头模型信息：")
+        print("\n[INFO] 人头模型信息：")
         print("-" * 40)
         teacher_info = detector.get_model_info('teacher')
         
         if teacher_info.get('loaded'):
-            print(f"✅ 加载成功")
-            print(f"📁 路径: {teacher_info['path']}")
-            print(f"🔢 类别数量: {teacher_info['num_classes']}")
-            print(f"📝 类别列表: {', '.join(teacher_info['classes'])}")
+            print(f"[OK] 加载成功")
+            print(f"[INFO] 路径: {teacher_info['path']}")
+            print(f"[INFO] 类别数量: {teacher_info['num_classes']}")
+            print(f"[INFO] 类别列表: {', '.join(teacher_info['classes'])}")
         else:
-            print(f"❌ 加载失败: {teacher_info.get('error')}")
+            print(f"[FAIL] 加载失败: {teacher_info.get('error')}")
     else:
-        print("\n⚠️  人头模型未加载")
+        print("\n[WARN] 人头模型未加载")
     
     return True
 
@@ -115,7 +115,7 @@ def test_dynamic_loading():
     models_info = BehaviorDetector.scan_models_directory(str(Config.MODEL_FOLDER))
     
     if len(models_info) < 1:
-        print("❌ 需要至少一个模型文件来测试")
+        print("[FAIL] 需要至少一个模型文件来测试")
         return False
     
     # 选择第一个有效的模型
@@ -126,7 +126,7 @@ def test_dynamic_loading():
             break
     
     if not test_model:
-        print("❌ 没有有效的模型文件")
+        print("[FAIL] 没有有效的模型文件")
         return False
     
     print(f"\n测试动态加载: {test_model['filename']}")
@@ -143,11 +143,11 @@ def test_dynamic_loading():
     success = detector.load_model('student', model_path)
     
     if success:
-        print(f"✅ 动态加载成功")
-        print(f"📝 自动识别的类别: {', '.join(detector.student_classes)}")
+        print(f"[OK] 动态加载成功")
+        print(f"[INFO] 自动识别的类别: {', '.join(detector.student_classes)}")
         return True
     else:
-        print(f"❌ 动态加载失败")
+        print(f"[FAIL] 动态加载失败")
         return False
 
 
@@ -165,7 +165,7 @@ def main():
         result1 = test_scan_models()
         results.append(('扫描模型目录', result1))
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
+        print(f"[FAIL] 测试失败: {e}")
         results.append(('扫描模型目录', False))
     
     print("\n" + "=" * 60 + "\n")
@@ -175,7 +175,7 @@ def main():
         result2 = test_model_loading()
         results.append(('加载模型', result2))
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
+        print(f"[FAIL] 测试失败: {e}")
         results.append(('加载模型', False))
     
     print("\n" + "=" * 60 + "\n")
@@ -185,7 +185,7 @@ def main():
         result3 = test_dynamic_loading()
         results.append(('动态加载', result3))
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
+        print(f"[FAIL] 测试失败: {e}")
         results.append(('动态加载', False))
     
     # 打印测试摘要
@@ -194,7 +194,7 @@ def main():
     print("=" * 60)
     
     for test_name, result in results:
-        status = "✅ 通过" if result else "❌ 失败"
+        status = "[OK] 通过" if result else "[FAIL] 失败"
         print(f"{test_name}: {status}")
     
     total = len(results)
@@ -204,9 +204,9 @@ def main():
     print("=" * 60)
     
     if passed == total:
-        print("\n🎉 所有测试通过！模型自动识别功能正常工作。")
+        print("\n[OK] 所有测试通过，模型自动识别功能正常工作。")
     else:
-        print("\n⚠️  部分测试失败，请检查模型文件。")
+        print("\n[WARN] 部分测试失败，请检查模型文件。")
     
     print("\n提示:")
     print("  - 确保 models/ 目录中有 .pt 格式的模型文件")
