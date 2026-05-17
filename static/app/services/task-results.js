@@ -3,6 +3,31 @@ export async function loadTaskById(taskId, request) {
     return response.data;
 }
 
+export async function loadVideoPollingSnapshot({
+    taskId,
+    request,
+    normalizeTaskPayload,
+}) {
+    let task = await loadTaskById(taskId, request);
+    let metrics = {};
+    try {
+        const metricsResponse = await request(`/api/streams/video/${taskId}/metrics`);
+        metrics = metricsResponse.data;
+    } catch (error) {
+        if (task.status === "processing") {
+            task = await loadTaskById(taskId, request);
+            if (task.status === "processing") {
+                throw error;
+            }
+        }
+    }
+    return resolveVideoPollingSnapshot({
+        task,
+        metrics,
+        normalizeTaskPayload,
+    });
+}
+
 export function buildAppliedTaskState({
     task,
     taskPayload,

@@ -88,7 +88,7 @@ start_demo_session.bat
 start_demo_session.bat --preflight-only
 ```
 
-其中 `verify_classroom_app.bat` 已包含 `startup_smoke`、回归烟测、边界审计与浏览器视觉审计；`start_demo_session.bat` 是答辩当天推荐的前台服务入口，终端保持打开时系统持续运行。
+其中 `verify_classroom_app.bat` 已包含 `startup_smoke`、回归烟测、边界审计、严格浏览器链路审计与浏览器视觉审计；`start_demo_session.bat` 是答辩当天推荐的前台服务入口，终端保持打开时系统持续运行。
 
 若要把真实答辩入口从启动到单图、批量、视频、历史导出、摄像头诊断/启停完整复跑，可执行：
 
@@ -171,15 +171,17 @@ verify_classroom_app.bat
 - 交互契约烟测
 - 业务回归烟测
 - 高标准边界审计
+- 严格系统级浏览器审计
 - 真实浏览器视觉审计
 
 说明：
 
 - `scripts/verify_all.py` 会优先使用系统 `node`
 - 若当前 shell 环境未配置 `node`，会自动回退到 bundled runtime 的 `node.exe`
-- `verify_all.py` 当前会串联 `healthcheck`、`startup_smoke`、前端 service 单测、UI/交互/回归烟测、边界审计和浏览器视觉审计
+- `verify_all.py` 当前会串联 `healthcheck`、`startup_smoke`、前端 service 单测、UI/交互/回归烟测、边界审计、严格系统级浏览器审计和浏览器视觉审计
 - `healthcheck.py` 与 `demo_preflight.py` 都会同时检查默认模型和当前用户配置里实际将加载的模型文件
 - 前端 service 单测当前覆盖 `task-results.js` 与 `browser-webcam-session.js`
+- 严格系统级浏览器审计会生成 `docs/_artifacts/strict-system-audit.json` 与对应的 trace / console / network / screenshot 产物目录
 - 浏览器视觉审计会生成 `docs/_artifacts/browser-audit-*.png` 与 `docs/_artifacts/browser-visual-audit.json`
 - 真实答辩入口服务演练会生成 `docs/_artifacts/real-demo-service-audit.json`
 - `demo_preflight.bat` 会校验 `docs/_artifacts/` 下完整验收产物是否齐全，且生成时间/文件时间不超过 24 小时；不满足则直接失败
@@ -212,6 +214,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\frontend_service_tests.ps1
 
 - 未初始化管理员时的登录页提示
 - 已登录工作台主页面关键 DOM 与静态资源入口
+
+严格系统级浏览器审计：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\strict_system_audit.py
+```
+
+当前覆盖：
+
+- 登录页未初始化提示、错误登录、成功登录
+- 工作台四种模式切换、主 CTA、弹窗焦点与通知反馈
+- 单图 / 批量 / 视频 / 摄像头主链路与报告打开、ZIP 导出
+- 1440 / 1366 / 390 三种固定视口下的布局与浏览器 console / network 问题
 
 交互契约烟测：
 

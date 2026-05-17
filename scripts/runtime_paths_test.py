@@ -29,6 +29,22 @@ def path_is_file_for(*existing: str):
     return _is_file
 
 
+def path_is_dir_for(*existing: str):
+    normalized = {str(Path(item)) for item in existing}
+
+    def _is_dir(path: Path) -> bool:
+        return str(path) in normalized
+
+    return _is_dir
+
+
+def glob_for(mapping: dict[str, list[Path]]):
+    def _glob(path: Path, pattern: str):
+        return mapping.get(pattern, [])
+
+    return _glob
+
+
 def test_prefers_python_from_env() -> None:
     env_python = Path(r"C:\Env\python.exe")
     current_python = Path(r"C:\Current\python.exe")
@@ -121,6 +137,7 @@ def test_prefers_node_from_path() -> None:
     with (
         patch("runtime_paths.shutil.which", return_value=r"C:\Node\node.exe"),
         patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths._can_invoke", return_value=True),
         patch("pathlib.Path.is_file", new=path_is_file_for(r"C:\Node\node.exe", str(fallback))),
     ):
         resolved = runtime_paths.resolve_node()
@@ -132,10 +149,23 @@ def test_uses_fallback_when_path_node_missing() -> None:
     with (
         patch("runtime_paths.shutil.which", return_value=None),
         patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths._can_invoke", return_value=False),
         patch("pathlib.Path.is_file", new=path_is_file_for(str(fallback))),
     ):
         resolved = runtime_paths.resolve_node()
     assert_equal(resolved, fallback, "fallback node should be used when PATH node is absent")
+
+
+def test_falls_back_when_path_node_is_not_invokable() -> None:
+    fallback = Path(r"C:\Fallback\node.exe")
+    with (
+        patch("runtime_paths.shutil.which", return_value=r"C:\Node\node.exe"),
+        patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths._can_invoke", return_value=False),
+        patch("pathlib.Path.is_file", new=path_is_file_for(r"C:\Node\node.exe", str(fallback))),
+    ):
+        resolved = runtime_paths.resolve_node()
+    assert_equal(resolved, fallback, "fallback node should be used when PATH node cannot be executed")
 
 
 def test_ignores_node_directory_candidates() -> None:
@@ -143,6 +173,7 @@ def test_ignores_node_directory_candidates() -> None:
     with (
         patch("runtime_paths.shutil.which", return_value=r"C:\Node\node-dir"),
         patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths._can_invoke", return_value=False),
         patch("pathlib.Path.is_file", new=path_is_file_for(str(fallback))),
     ):
         resolved = runtime_paths.resolve_node()
@@ -154,10 +185,49 @@ def test_returns_none_when_no_node_available() -> None:
     with (
         patch("runtime_paths.shutil.which", return_value=None),
         patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths._can_invoke", return_value=False),
         patch("pathlib.Path.is_file", new=path_is_file_for()),
     ):
         resolved = runtime_paths.resolve_node()
     assert_equal(resolved, None, "missing node should return None")
+
+
+def test_resolve_playwright_node_paths_prefers_project_node_modules() -> None:
+    project_node_modules = Path(r"D:\Repo\static\app\node_modules")
+    fallback = Path(r"C:\Fallback\node.exe")
+    bundled_modules = Path(r"C:\Bundled\node_modules")
+    bundled_pnpm = bundled_modules / ".pnpm"
+    playwright_dir = bundled_pnpm / "playwright@1.59.1" / "node_modules"
+    playwright_core_dir = bundled_pnpm / "playwright-core@1.59.1" / "node_modules"
+
+    with (
+        patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths.NODE_MODULES_FALLBACK", bundled_modules),
+        patch("pathlib.Path.is_dir", new=path_is_dir_for(str(project_node_modules), str(bundled_pnpm), str(playwright_dir), str(playwright_core_dir))),
+        patch("pathlib.Path.glob", new=glob_for({"playwright@*/node_modules": [playwright_dir], "playwright-core@*/node_modules": [playwright_core_dir]})),
+    ):
+        resolved = runtime_paths.resolve_playwright_node_paths(project_node_modules=project_node_modules)
+    assert_equal(
+        resolved,
+        [project_node_modules, playwright_dir, playwright_core_dir],
+        "project node_modules should be first, followed by bundled playwright pnpm paths",
+    )
+
+
+def test_resolve_playwright_node_paths_ignores_missing_directories() -> None:
+    fallback = Path(r"C:\Fallback\node.exe")
+    bundled_modules = Path(r"C:\Bundled\node_modules")
+    bundled_pnpm = bundled_modules / ".pnpm"
+    playwright_dir = bundled_pnpm / "playwright@1.59.1" / "node_modules"
+
+    with (
+        patch("runtime_paths.NODE_FALLBACK", fallback),
+        patch("runtime_paths.NODE_MODULES_FALLBACK", bundled_modules),
+        patch("pathlib.Path.is_dir", new=path_is_dir_for(str(bundled_pnpm), str(playwright_dir))),
+        patch("pathlib.Path.glob", new=glob_for({"playwright@*/node_modules": [playwright_dir], "playwright-core@*/node_modules": []})),
+    ):
+        resolved = runtime_paths.resolve_playwright_node_paths(project_node_modules=Path(r"D:\Missing\node_modules"))
+    assert_equal(resolved, [playwright_dir], "missing project directories should be skipped")
 
 
 def main() -> int:
@@ -169,8 +239,11 @@ def main() -> int:
     test_returns_none_when_no_python_available()
     test_prefers_node_from_path()
     test_uses_fallback_when_path_node_missing()
+    test_falls_back_when_path_node_is_not_invokable()
     test_ignores_node_directory_candidates()
     test_returns_none_when_no_node_available()
+    test_resolve_playwright_node_paths_prefers_project_node_modules()
+    test_resolve_playwright_node_paths_ignores_missing_directories()
     print("runtime_paths tests passed")
     return 0
 

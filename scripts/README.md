@@ -6,7 +6,7 @@
 
 1. `verify_all.py` / `verify_all.ps1`
    - 一键总验收入口
-   - 串联 `healthcheck`、`startup_smoke`、前端 service 单测、UI 烟测、交互烟测、回归烟测、高标准边界审计、浏览器视觉审计
+   - 串联 `healthcheck`、`startup_smoke`、前端 service 单测、UI 烟测、交互烟测、回归烟测、高标准边界审计、严格系统级浏览器审计、浏览器视觉审计
    - 若想从仓库根目录直接运行，可使用 `verify_classroom_app.bat`
 
 2. `demo_preflight.py`
@@ -51,9 +51,11 @@
 
 6. `ui_smoke.py`
    - 页面结构与关键 DOM 烟测
+   - 只覆盖结构存在性，不代表真实浏览器 UX 已通过
 
 7. `interaction_smoke.py`
    - 登录、模式切换、按钮显隐、导出动作等交互契约烟测
+   - 只覆盖交互契约，不替代真实浏览器行为审计
 
 8. `regression_smoke.py`
    - 业务主链路回归烟测
@@ -64,12 +66,18 @@
    - 使用临时数据目录覆盖未初始化登录、管理员弱输入、错误上传、任务缺失、报告批量参数、浏览器摄像头停止参数和样本识别效果
    - 运行结束会校验真实 `data`、`uploads`、`outputs` 状态未变化
 
-10. `browser_visual_audit.ps1`
+10. `strict_system_audit.py`
+   - 启动两套隔离审计服务，并调用 `static/app/scripts/strict-system-audit.cjs` 做 Playwright 级严格浏览器审计
+   - 默认覆盖 1440 / 1366 / 390 三种视口下的登录、工作台、报告、批量导出、视频停止、浏览器摄像头 fallback，以及桌面视口下的视频完成与服务端摄像头启停
+   - 会收集 machine-readable issue 列表、截图、console/network 日志，以及出现问题时的 trace
+   - 汇总产物写入 `docs/_artifacts/strict-system-audit.json`
+
+11. `browser_visual_audit.ps1`
    - 启动隔离审计服务并用本机 Edge/Chrome headless 截图
    - 产物写入 `docs/_artifacts/browser-audit-*.png` 和 `docs/_artifacts/browser-visual-audit.json`
    - 当前已纳入默认总验收；若当前机器缺少 Edge/Chrome，会在该项失败并给出原因
 
-11. `real_demo_service_audit.py`
+12. `real_demo_service_audit.py`
    - 真实答辩入口服务演练
    - 会启动或复用 `start_demo_session.bat` 对应的 `127.0.0.1:5000` 服务
    - 覆盖答辩入口默认模式、默认模型来源、运行时模型切换、单图、批量、视频流、历史导出、服务端摄像头诊断与启停
@@ -77,7 +85,7 @@
    - 该脚本会真实写入正式 `data/`、`uploads/`、`outputs/`，用于答辩前整链路彩排，不属于隔离烟测
    - 若想从仓库根目录直接运行，可使用 `real_demo_service_audit.bat`
 
-12. `webcam_probe.py`
+13. `webcam_probe.py`
     - 单独检查本机摄像头是否能被项目打开
     - 默认使用隔离临时目录，不修改正式 `data/`、`uploads/`、`outputs`
     - 默认只诊断，不启动任务：`.\.venv\Scripts\python.exe scripts\webcam_probe.py`
@@ -94,9 +102,10 @@
   - 统一解析 `python` / `node` 运行时
   - `python` 优先顺序：`CLASSROOM_PYTHON` -> 当前解释器 -> `ROOT/.venv/Scripts/python.exe` -> PATH 中的 `python`
   - `node` 优先使用系统 PATH，找不到时回退到 bundled runtime
+  - `resolve_playwright_node_paths()` 会优先使用 `static/app/node_modules`，找不到时回退到 bundled runtime 内的 `playwright` / `playwright-core` pnpm 目录
 
 - `runtime_paths_test.py`
-  - 校验 `runtime_paths.resolve_python()` / `resolve_node()` 的优先级与 fallback 行为
+  - 校验 `runtime_paths.resolve_python()` / `resolve_node()` / `resolve_playwright_node_paths()` 的优先级与 fallback 行为
 
 - `model_checksum_manifest.py`
   - 维护 `models/checksums.json`
@@ -110,5 +119,6 @@
   - 会本地签发管理员 session cookie，并读取运行中服务的默认模式与模型来源
 
 - `audit_server.py`
-  - 只供 `browser_visual_audit.ps1` 使用的隔离审计服务
+  - 供 `browser_visual_audit.ps1` 与 `strict_system_audit.py` 复用的隔离审计服务
+  - 支持带管理员 / 无管理员两种启动形态
   - 通过环境变量把上传、输出、数据库、管理员配置和 YOLO 配置全部指向临时目录

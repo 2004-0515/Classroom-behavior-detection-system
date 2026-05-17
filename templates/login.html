@@ -47,18 +47,29 @@
                 {% endif %}
                 <label class="field">
                     <span>账号</span>
-                    <input class="text-input" type="text" name="username" placeholder="请输入管理员账号" autocomplete="username" required>
+                    <input id="usernameInput" class="text-input" type="text" name="username" placeholder="请输入管理员账号" autocomplete="username" autofocus required>
                 </label>
                 <label class="field">
                     <span>密码</span>
-                    <input class="text-input" type="password" name="password" placeholder="请输入密码" autocomplete="current-password" required>
+                    <input id="passwordInput" class="text-input" type="password" name="password" placeholder="请输入密码" autocomplete="current-password" required>
                 </label>
                 {% if error %}
-                <div class="inline-error">{{ error }}</div>
+                <div id="loginError" class="inline-error" role="alert">{{ error }}</div>
                 {% endif %}
                 <button class="primary-btn block-btn" type="submit" {% if setup_required %}disabled{% endif %}>进入控制台</button>
             </form>
         </section>
     </main>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const error = document.getElementById("loginError");
+            if (error) {
+                error.tabIndex = -1;
+                error.focus();
+                return;
+            }
+            document.getElementById("usernameInput")?.focus();
+        });
+    </script>
 </body>
 </html>

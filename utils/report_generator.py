@@ -67,6 +67,12 @@ class ReportGenerator:
             color: var(--text);
             line-height: 1.7;
             padding: 24px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }}
+        h1, h2, h3, p, span, strong, small, li, td, th, a {{
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }}
         .page {{
             max-width: 1280px;
@@ -124,8 +130,9 @@ class ReportGenerator:
         }}
         h1 {{
             font-size: 40px;
-            line-height: 1.08;
+            line-height: 1.16;
             margin-bottom: 12px;
+            padding-bottom: 4px;
             color: var(--primary);
         }}
         .hero-copy p,
@@ -168,7 +175,8 @@ class ReportGenerator:
         }}
         .preview-summary strong {{
             font-size: 28px;
-            line-height: 1.12;
+            line-height: 1.18;
+            padding-bottom: 4px;
             color: var(--primary);
         }}
         .preview-summary p {{
@@ -241,7 +249,8 @@ class ReportGenerator:
         .narrative-card strong {{
             display: block;
             font-size: 34px;
-            line-height: 1.05;
+            line-height: 1.14;
+            padding-bottom: 4px;
             color: var(--primary);
         }}
         .tag-row {{
@@ -335,6 +344,11 @@ class ReportGenerator:
             }}
             h1 {{
                 font-size: 32px;
+                line-height: 1.18;
+            }}
+            .metric-card strong,
+            .narrative-card strong {{
+                font-size: 30px;
             }}
         }}
         @media print {{

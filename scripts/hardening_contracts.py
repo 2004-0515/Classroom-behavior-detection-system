@@ -412,19 +412,28 @@ class DummyTaskService:
         self.status_updates = []
         self.saved_summaries = []
         self.assets = []
+        self.tasks = {}
 
     def create_task(self, task_id, task_type, file_name=None):
-        self.created.append({"task_id": task_id, "task_type": task_type, "file_name": file_name})
+        record = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "file_name": file_name,
+            "status": "processing",
+        }
+        self.created.append(record)
+        self.tasks[task_id] = dict(record)
 
     def update_status(self, task_id, status, processed_frames=None, total_frames=None):
-        self.status_updates.append(
-            {
-                "task_id": task_id,
-                "status": status,
-                "processed_frames": processed_frames,
-                "total_frames": total_frames,
-            }
-        )
+        update = {
+            "task_id": task_id,
+            "status": status,
+            "processed_frames": processed_frames,
+            "total_frames": total_frames,
+        }
+        self.status_updates.append(update)
+        if task_id in self.tasks:
+            self.tasks[task_id].update(update)
 
     def save_summary(self, task_id, student_behavior_stats, teacher_behavior_stats, total_detections, average_confidence, duration):
         self.saved_summaries.append(
@@ -437,6 +446,16 @@ class DummyTaskService:
                 "duration": duration,
             }
         )
+        if task_id in self.tasks:
+            self.tasks[task_id].update(
+                {
+                    "student_behavior_stats": student_behavior_stats,
+                    "teacher_behavior_stats": teacher_behavior_stats,
+                    "total_detections": total_detections,
+                    "average_confidence": average_confidence,
+                    "duration": duration,
+                }
+            )
 
     def save_task_asset(self, *args, **kwargs):
         self.assets.append((args, kwargs))
@@ -447,8 +466,19 @@ class DummyTaskService:
     def save_teacher_detections_bulk(self, *args, **kwargs):
         return None
 
+    def get_task(self, task_id):
+        task = self.tasks.get(task_id)
+        return dict(task) if task else None
+
 
 def run_native_webcam_contracts() -> dict:
+    def stable_ready_loop(stream: StreamService):
+        def _loop():
+            stream._webcam_ready_event.set()
+            while stream.webcam_state["running"]:
+                time.sleep(0.01)
+        return _loop
+
     timeout_task_service = DummyTaskService()
     timeout_stream = StreamService(DummyModelService(), timeout_task_service)
     timeout_stream.WEBCAM_STARTUP_TIMEOUT = 0.1
@@ -495,9 +525,44 @@ def run_native_webcam_contracts() -> dict:
     if "camera read failed" not in (post_start_stream.webcam_state.get("last_error") or ""):
         raise AssertionError("post-start read failure did not preserve last_error")
 
+    idempotent_task_service = DummyTaskService()
+    idempotent_stream = StreamService(DummyModelService(), idempotent_task_service)
+    idempotent_stream.WEBCAM_STARTUP_TIMEOUT = 0.2
+    idempotent_stream.diagnose_webcam = lambda camera_index: {
+        "selected": {"index": camera_index, "backend": "CAP_DSHOW", "backend_id": 700},
+        "attempts": [],
+    }
+    idempotent_stream._run_webcam_loop = stable_ready_loop(idempotent_stream)
+    first_start = idempotent_stream.start_webcam(0, 0.25, 0.45)
+    second_start = idempotent_stream.start_webcam(0, 0.25, 0.45)
+    if second_start.get("task_id") != first_start.get("task_id"):
+        raise AssertionError("duplicate webcam start should reuse the active task")
+    if len(idempotent_task_service.created) != 1:
+        raise AssertionError("duplicate webcam start should not create a second task")
+    idempotent_stream.stop_webcam()
+
+    stale_task_service = DummyTaskService()
+    stale_stream = StreamService(DummyModelService(), stale_task_service)
+    stale_stream.WEBCAM_STARTUP_TIMEOUT = 0.2
+    stale_stream.diagnose_webcam = lambda camera_index: {
+        "selected": {"index": camera_index, "backend": "CAP_DSHOW", "backend_id": 700},
+        "attempts": [],
+    }
+    stale_stream._run_webcam_loop = stable_ready_loop(stale_stream)
+    stale_start = stale_stream.start_webcam(0, 0.25, 0.45)
+    stale_task_service.update_status(stale_start["task_id"], "completed")
+    restarted = stale_stream.start_webcam(0, 0.25, 0.45)
+    if restarted.get("task_id") == stale_start.get("task_id"):
+        raise AssertionError("stale webcam running state should restart with a new task")
+    if len(stale_task_service.created) != 2:
+        raise AssertionError("stale webcam running state should create a fresh task after cleanup")
+    stale_stream.stop_webcam()
+
     return {
         "startup_timeout": "webcam_unready",
         "post_start_read_failure": "failed_with_last_error",
+        "duplicate_start": "reuses_active_task",
+        "stale_running_restart": "restarts_after_cleanup",
     }
 
 

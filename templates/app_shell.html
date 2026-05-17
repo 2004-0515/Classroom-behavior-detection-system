@@ -6,7 +6,7 @@
     <title>课堂行为检测控制台</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260514-webcam-fix') }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
 </head>
 <body>
     <div id="app" class="app-shell" data-username="{{ username }}">
@@ -131,9 +131,9 @@
                         </div>
                         <div id="selectedFiles" class="list-stack"></div>
                         <div id="webcamControls" class="inline-actions hidden">
-                            <button id="probeWebcamBtn" class="ghost-btn" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('probeWebcam', this)">诊断摄像头</button>
-                            <button id="startWebcamBtn" class="primary-btn" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('startWebcam', this)">启动摄像头</button>
-                            <button id="stopWebcamBtn" class="danger-btn hidden" type="button" onclick="window.classroomAppControlsInvoke && window.classroomAppControlsInvoke('stopWebcam', this)">停止摄像头</button>
+                            <button id="probeWebcamBtn" class="ghost-btn" type="button">诊断摄像头</button>
+                            <button id="startWebcamBtn" class="primary-btn" type="button">启动摄像头</button>
+                            <button id="stopWebcamBtn" class="danger-btn hidden" type="button">停止摄像头</button>
                         </div>
                         <div id="webcamDiagnostics" class="meta-text hidden"></div>
                         <div class="stacked-actions">
@@ -212,7 +212,7 @@
                                 <h2>通知</h2>
                             </div>
                         </div>
-                        <div id="notifications" class="notification-list"></div>
+                        <div id="notifications" class="notification-list" role="status" aria-live="polite" aria-atomic="true"></div>
                     </article>
                 </section>
 
@@ -297,11 +297,11 @@
     </div>
 
     <div id="settingsModal" class="dialog-backdrop hidden" aria-hidden="true">
-        <section class="dialog-card">
+        <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle" tabindex="-1">
             <header class="dialog-head">
                 <div>
                     <p class="eyebrow">Workspace Settings</p>
-                    <h2>界面设置</h2>
+                    <h2 id="settingsModalTitle">界面设置</h2>
                 </div>
                 <button class="icon-btn dialog-close" data-close-dialog="settingsModal" type="button">关闭</button>
             </header>
@@ -337,11 +337,11 @@
     </div>
 
     <div id="modelDetailsModal" class="dialog-backdrop hidden" aria-hidden="true">
-        <section class="dialog-card wide-dialog">
+        <section class="dialog-card wide-dialog" role="dialog" aria-modal="true" aria-labelledby="modelDetailsModalTitle" tabindex="-1">
             <header class="dialog-head">
                 <div>
                     <p class="eyebrow">Loaded Models</p>
-                    <h2>当前模型信息</h2>
+                    <h2 id="modelDetailsModalTitle">当前模型信息</h2>
                 </div>
                 <button class="icon-btn dialog-close" data-close-dialog="modelDetailsModal" type="button">关闭</button>
             </header>
@@ -350,11 +350,11 @@
     </div>
 
     <div id="modelLibraryModal" class="dialog-backdrop hidden" aria-hidden="true">
-        <section class="dialog-card wide-dialog">
+        <section class="dialog-card wide-dialog" role="dialog" aria-modal="true" aria-labelledby="modelLibraryModalTitle" tabindex="-1">
             <header class="dialog-head">
                 <div>
                     <p class="eyebrow">Model Inventory</p>
-                    <h2>候选模型库</h2>
+                    <h2 id="modelLibraryModalTitle">候选模型库</h2>
                 </div>
                 <button class="icon-btn dialog-close" data-close-dialog="modelLibraryModal" type="button">关闭</button>
             </header>
@@ -363,7 +363,7 @@
     </div>
 
     <div id="detailModal" class="dialog-backdrop hidden" aria-hidden="true">
-        <section class="dialog-card xwide-dialog">
+        <section class="dialog-card xwide-dialog" role="dialog" aria-modal="true" aria-labelledby="detailModalTitle" tabindex="-1">
             <header class="dialog-head">
                 <div>
                     <p class="eyebrow">Detection Inspector</p>
@@ -391,11 +391,11 @@
     </div>
 
     <div id="randomCallModal" class="dialog-backdrop hidden" aria-hidden="true">
-        <section class="dialog-card wide-dialog">
+        <section class="dialog-card wide-dialog" role="dialog" aria-modal="true" aria-labelledby="randomCallModalTitle" tabindex="-1">
             <header class="dialog-head">
                 <div>
                     <p class="eyebrow">Random Call</p>
-                    <h2>随机点名结果</h2>
+                    <h2 id="randomCallModalTitle">随机点名结果</h2>
                 </div>
                 <button class="icon-btn dialog-close" data-close-dialog="randomCallModal" type="button">关闭</button>
             </header>
@@ -408,42 +408,6 @@
         </section>
     </div>
 
-    <script>
-        window.classroomAppControlsInvoke = async function (action, button) {
-            const diagnostics = document.getElementById("webcamDiagnostics");
-            const notifications = document.getElementById("notifications");
-            const originalLabel = button ? button.dataset.originalLabel || button.textContent : "";
-            if (button && !button.dataset.originalLabel) {
-                button.dataset.originalLabel = originalLabel;
-            }
-            if (button) {
-                button.textContent = action === "startWebcam" ? "正在启动..." : action === "stopWebcam" ? "正在停止..." : "正在诊断...";
-            }
-            if (diagnostics) {
-                diagnostics.classList.remove("hidden");
-                diagnostics.textContent = "按钮点击已触发，正在进入前端处理流程...";
-            }
-            try {
-                const controls = window.classroomAppControls;
-                if (!controls || typeof controls[action] !== "function") {
-                    throw new Error("前端控制脚本尚未就绪，请强制刷新页面后重试");
-                }
-                await controls[action]();
-            } catch (error) {
-                if (diagnostics) {
-                    diagnostics.textContent = `前端点击已收到，但执行失败：${error.message}`;
-                }
-                if (notifications) {
-                    notifications.innerHTML = `<article class="notification-item danger"><strong>前端执行失败</strong><small>${error.message}</small></article>`;
-                }
-                throw error;
-            } finally {
-                if (button) {
-                    button.textContent = button.dataset.originalLabel || originalLabel;
-                }
-            }
-        };
-    </script>
     <script type="module" src="{{ url_for('static', filename='app/main.js', v='20260514-webcam-fix-3') }}"></script>
 </body>
 </html>

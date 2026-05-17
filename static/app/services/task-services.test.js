@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
     buildAppliedTaskState,
     loadTaskById,
+    loadVideoPollingSnapshot,
     resolveHistoryTaskFollowup,
     resolveVideoPollingSnapshot,
     resolveWebcamPollingSnapshot,
@@ -89,6 +90,67 @@ test("resolveVideoPollingSnapshot materializes payload when processing is finish
         activeTaskPayload: normalized,
         activeAssetIndex: 0,
     });
+});
+
+test("loadVideoPollingSnapshot returns live metrics while processing", async () => {
+    const calls = [];
+    const request = async (url) => {
+        calls.push(url);
+        if (url === "/api/tasks/video-3") return { data: { task_id: "video-3", status: "processing" } };
+        if (url === "/api/streams/video/video-3/metrics") return { data: { fps: 9.4, processed_frames: 12 } };
+        throw new Error(`unexpected ${url}`);
+    };
+
+    const result = await loadVideoPollingSnapshot({
+        taskId: "video-3",
+        request,
+        normalizeTaskPayload: () => { throw new Error("should not normalize while processing"); },
+    });
+
+    assert.deepEqual(calls, [
+        "/api/tasks/video-3",
+        "/api/streams/video/video-3/metrics",
+    ]);
+    assert.equal(result.processing, true);
+    assert.deepEqual(result.metrics, { fps: 9.4, processed_frames: 12 });
+});
+
+test("loadVideoPollingSnapshot tolerates metrics cleanup once the task finishes", async () => {
+    const calls = [];
+    const metricsError = new Error("任务不存在或已结束");
+    let taskReads = 0;
+    const request = async (url) => {
+        calls.push(url);
+        if (url === "/api/tasks/video-4") {
+            taskReads += 1;
+            return {
+                data: taskReads === 1
+                    ? { task_id: "video-4", status: "processing" }
+                    : { task_id: "video-4", status: "completed", assets: { results: [{ filename: "done.jpg" }] } },
+            };
+        }
+        if (url === "/api/streams/video/video-4/metrics") throw metricsError;
+        throw new Error(`unexpected ${url}`);
+    };
+
+    const normalized = { assets: { results: [{ filename: "done.jpg" }] } };
+    const result = await loadVideoPollingSnapshot({
+        taskId: "video-4",
+        request,
+        normalizeTaskPayload: (task) => {
+            assert.equal(task.status, "completed");
+            return normalized;
+        },
+    });
+
+    assert.deepEqual(calls, [
+        "/api/tasks/video-4",
+        "/api/streams/video/video-4/metrics",
+        "/api/tasks/video-4",
+    ]);
+    assert.equal(result.processing, false);
+    assert.deepEqual(result.metrics, {});
+    assert.equal(result.taskPayload, normalized);
 });
 
 test("resolveWebcamPollingSnapshot preserves current payload while processing", () => {

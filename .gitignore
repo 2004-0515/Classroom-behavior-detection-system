@@ -8,6 +8,7 @@ env/
 ENV/
 .venv
 .env
+static/app/node_modules/
 .DS_Store
 *.db
 uploads/*

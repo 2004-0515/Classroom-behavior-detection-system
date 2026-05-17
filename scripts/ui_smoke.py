@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-# Smoke-check the main pages and critical DOM presence without mutating real app state.
+# Structural smoke-check only: verify page presence and critical DOM markers without treating UX quality as covered.
 def configure_temp_environment(with_admin: bool):
     runtime, _ = create_and_apply_isolated_runtime(
         "ui-smoke",

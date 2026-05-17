@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-# Exercise login/session and frontend interaction contracts in an isolated temp environment.
+# Contract smoke only: exercise login/session and key interaction toggles without claiming full browser UX coverage.
 def configure_temp_environment():
     runtime, _ = create_and_apply_isolated_runtime(
         "interaction-smoke",

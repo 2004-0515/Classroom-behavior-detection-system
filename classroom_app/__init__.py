@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
 from flask_login import LoginManager
 
@@ -73,6 +73,10 @@ def create_app():
         if user_id == username:
             return AdminUser(username)
         return None
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return send_from_directory(app.static_folder, "favicon.ico", mimetype="image/x-icon")
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)

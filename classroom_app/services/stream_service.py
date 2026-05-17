@@ -13,7 +13,7 @@ from typing import List, Dict, Any
 
 import cv2
 
-from classroom_app.core.errors import InputError, StreamError
+from classroom_app.core.errors import StreamError
 from config import Config
 
 
@@ -59,7 +59,15 @@ class StreamService:
 
     def start_webcam(self, camera_index, confidence, iou):
         if self.webcam_state["running"]:
-            raise InputError("摄像头已在运行", code="webcam_running")
+            existing_task_id = self.webcam_state.get("task_id")
+            existing_task = self.task_service.get_task(existing_task_id) if existing_task_id else None
+            if existing_task and existing_task.get("status") == "processing":
+                return {
+                    "task_id": existing_task_id,
+                    "camera_index": self.webcam_state["camera_index"],
+                    "backend": self.webcam_state.get("backend_name") or "CAP_ANY",
+                }
+            self.stop_webcam()
 
         diagnostics = self.diagnose_webcam(camera_index)
         selected = diagnostics.get("selected")

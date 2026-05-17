@@ -11,7 +11,7 @@ from runtime_paths import PYTHON_ENV_VAR, resolve_python
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = resolve_python(current_python=sys.executable)
+PYTHON = resolve_python(current_python=ROOT / ".venv" / "Scripts" / "python.exe")
 ARTIFACT_DIR = ROOT / "docs" / "_artifacts"
 SUMMARY_PATH = ARTIFACT_DIR / "verify-all-summary.json"
 
@@ -33,6 +33,7 @@ if PYTHON:
             ("regression_smoke", [str(PYTHON), "scripts/regression_smoke.py"], 180),
             ("hardening_contracts", [str(PYTHON), "scripts/hardening_contracts.py"], 240),
             ("audit_readiness", [str(PYTHON), "scripts/audit_readiness.py"], 120),
+            ("strict_system_audit", [str(PYTHON), "scripts/strict_system_audit.py"], 720),
         ]
     )
 CHECKS.append(

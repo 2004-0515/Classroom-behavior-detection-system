@@ -76,8 +76,8 @@ import {
 import {
     buildAppliedTaskState,
     loadTaskById,
+    loadVideoPollingSnapshot,
     resolveHistoryTaskFollowup,
-    resolveVideoPollingSnapshot,
     resolveWebcamPollingSnapshot,
 } from "./services/task-results.js";
 import { restoreStoppedTaskState, stopVideoTask } from "./services/task-runtime.js";
@@ -87,6 +87,7 @@ import { getState, pushNotification, setState, subscribe } from "./store.js";
 
 const WEBCAM_DIAGNOSTICS_TIMEOUT_MS = 16000;
 const BROWSER_WEBCAM_FIRST_FRAME_TIMEOUT_MS = 4500;
+const WEBCAM_SERVER_START_RETRY_DELAY_MS = 600;
 const VALID_MODES = new Set(["image", "batch", "video", "webcam"]);
 
 const MODE_CONTENT = {
@@ -165,6 +166,16 @@ const browserWebcamSession = {
     video: null,
     canvas: null,
 };
+const DIALOG_FOCUSABLE_SELECTOR = [
+    "button:not([disabled])",
+    "[href]",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])",
+].join(", " );
+let activeDialogId = null;
+const dialogOpeners = new Map();
 
 document.addEventListener("DOMContentLoaded", async () => {
     bindElements();
@@ -265,6 +276,7 @@ function bindEvents() {
             }
         });
     });
+    document.addEventListener("keydown", handleDialogKeydown);
 }
 
 async function bootstrap() {
@@ -541,13 +553,9 @@ function startVideoPolling(taskId) {
     clearInterval(taskPoller);
     const refresh = async () => {
         try {
-            const [taskRes, metricsRes] = await Promise.all([
-                request(`/api/tasks/${taskId}`),
-                request(`/api/streams/video/${taskId}/metrics`),
-            ]);
-            const snapshot = resolveVideoPollingSnapshot({
-                task: taskRes.data,
-                metrics: metricsRes.data,
+            const snapshot = await loadVideoPollingSnapshot({
+                taskId,
+                request,
                 normalizeTaskPayload,
             });
             setState(snapshot.statePatch);
@@ -615,6 +623,33 @@ function findPreferredWebcamAttempt(diagnostics, cameraIndex) {
         || null;
 }
 
+function buildServerWebcamStartRequestOptions() {
+    return {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            camera_index: getState().cameraIndex,
+            confidence: getState().confidence,
+            iou: getState().iou,
+        }),
+    };
+}
+
+async function requestServerWebcamStart() {
+    return request("/api/streams/webcam/start", buildServerWebcamStartRequestOptions());
+}
+
+async function requestServerWebcamStartWithRetry() {
+    try {
+        return await requestServerWebcamStart();
+    } catch (error) {
+        pushNotification(`服务端摄像头启动未完成，正在重试: ${error.message}`, "info");
+        await request("/api/streams/webcam/stop", { method: "POST" }).catch(() => ({}));
+        await waitMs(WEBCAM_SERVER_START_RETRY_DELAY_MS);
+        return requestServerWebcamStart();
+    }
+}
+
 async function startWebcam() {
     setState({ webcamStarting: true });
     renderActionButtons();
@@ -635,11 +670,7 @@ async function startWebcam() {
             await startBrowserWebcamFallback(preferredAttempt.error || "服务端无法读取摄像头画面");
             return;
         }
-        const response = await request("/api/streams/webcam/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ camera_index: getState().cameraIndex, confidence: getState().confidence, iou: getState().iou }),
-        });
+        const response = await requestServerWebcamStartWithRetry();
         setState({ currentTask: { task_id: response.data.task_id, status: "processing", task_type: "webcam", file_name: `camera_${response.data.camera_index}` }, activeTaskPayload: null });
         showMedia("image", "/api/streams/webcam/feed");
         els.videoMeta.innerHTML = `<span class="pill processing">实时巡检中</span><span class="pill">机位 ${response.data.camera_index} / ${response.data.backend}</span>`;
@@ -1363,7 +1394,7 @@ function renderActionButtons() {
     const mode = task?.task_type || state.mode;
     const hasAsset = canDownloadCurrentAsset(task, summary);
     const webcamMode = state.mode === "webcam";
-    const webcamActive = task?.task_type === "webcam" || browserWebcamSession.active;
+    const webcamActive = (task?.task_type === "webcam" && task?.status === "processing") || browserWebcamSession.active;
     const webcamStarting = state.webcamStarting;
     const hasPendingFiles = (state.selectedFiles || []).length > 0;
     const runningDetection = task?.status === "processing" && task?.task_type !== "webcam";
@@ -1678,11 +1709,69 @@ function pickModelFromLibrary(role, modelValue) {
     pushNotification(`已将 ${truncate(formatModelDetail(modelValue), 24)} 设为${role === "teacher" ? "教师" : "学生"}模型候选，请点击“应用模型”生效`, "success");
 }
 
+function getDialogCard(id) {
+    return els[id]?.querySelector(".dialog-card") || null;
+}
+
+function getDialogFocusableElements(dialog) {
+    if (!dialog) return [];
+    return [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)].filter((node) => !node.hasAttribute("disabled") && !node.getAttribute("aria-hidden") && !node.classList.contains("hidden"));
+}
+
+function focusDialog(id) {
+    const dialog = getDialogCard(id);
+    if (!dialog) return;
+    const [firstFocusable] = getDialogFocusableElements(dialog);
+    (firstFocusable || dialog).focus();
+}
+
+function trapDialogFocus(event, dialog) {
+    const focusable = getDialogFocusableElements(dialog);
+    if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+    }
+    if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    }
+}
+
+function handleDialogKeydown(event) {
+    if (!activeDialogId) return;
+    const dialog = getDialogCard(activeDialogId);
+    if (!dialog) return;
+    if (event.key === "Escape") {
+        event.preventDefault();
+        closeDialog(activeDialogId);
+        return;
+    }
+    if (event.key === "Tab") {
+        trapDialogFocus(event, dialog);
+    }
+}
+
 function openDialog(id) {
     const node = els[id];
-    if (!node) return;
+    const dialog = getDialogCard(id);
+    if (!node || !dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogOpeners.set(id, opener);
     node.classList.remove("hidden");
     node.setAttribute("aria-hidden", "false");
+    activeDialogId = id;
+    window.requestAnimationFrame(() => focusDialog(id));
 }
 
 function closeDialog(id) {
@@ -1690,6 +1779,14 @@ function closeDialog(id) {
     if (!node) return;
     node.classList.add("hidden");
     node.setAttribute("aria-hidden", "true");
+    if (activeDialogId === id) {
+        activeDialogId = null;
+    }
+    const opener = dialogOpeners.get(id);
+    dialogOpeners.delete(id);
+    if (opener && typeof opener.focus === "function") {
+        opener.focus();
+    }
 }
 
 // Keep formatting-aware wrappers local so shared helpers stay presentation-agnostic.
