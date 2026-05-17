@@ -45,6 +45,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 .\.venv\Scripts\python.exe scripts\build_acceptance_package.py
 ```
 
+或直接执行：
+
+```bat
+build_acceptance_package.bat
+```
+
 ## 关键证据
 
 - [verify-all-summary.json](./_artifacts/verify-all-summary.json)

@@ -104,6 +104,17 @@ real_demo_service_audit.bat
 
 该脚本会真实写入正式 `data/`、`uploads/`、`outputs/`，并生成 `docs/_artifacts/real-demo-service-audit.json`。
 
+若要把当前答辩说明和关键验收产物打成一个可带走的包，可执行：
+
+```bat
+build_acceptance_package.bat
+```
+
+输出：
+
+- `docs/_artifacts/acceptance-20260518-package.zip`
+- `docs/_artifacts/acceptance-20260518-package.manifest.json`
+
 若要单独验证本机摄像头，也可以执行：
 
 ```powershell
