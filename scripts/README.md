@@ -78,14 +78,19 @@
    - 当前已纳入默认总验收；若当前机器缺少 Edge/Chrome，会在该项失败并给出原因
 
 12. `real_demo_service_audit.py`
-   - 真实答辩入口服务演练
-   - 会启动或复用 `start_demo_session.bat` 对应的 `127.0.0.1:5000` 服务
-   - 覆盖答辩入口默认模式、默认模型来源、运行时模型切换、单图、批量、视频流、历史导出、服务端摄像头诊断与启停
-   - 产物写入 `docs/_artifacts/real-demo-service-audit.json`
-   - 该脚本会真实写入正式 `data/`、`uploads/`、`outputs/`，用于答辩前整链路彩排，不属于隔离烟测
-   - 若想从仓库根目录直接运行，可使用 `real_demo_service_audit.bat`
+    - 真实答辩入口服务演练
+    - 会启动或复用 `start_demo_session.bat` 对应的 `127.0.0.1:5000` 服务
+    - 覆盖答辩入口默认模式、默认模型来源、运行时模型切换、单图、批量、视频流、历史导出、服务端摄像头诊断与启停
+    - 产物写入 `docs/_artifacts/real-demo-service-audit.json`
+    - 该脚本会真实写入正式 `data/`、`uploads/`、`outputs/`，用于答辩前整链路彩排，不属于隔离烟测
+    - 若想从仓库根目录直接运行，可使用 `real_demo_service_audit.bat`
 
-13. `webcam_probe.py`
+13. `build_acceptance_package.py`
+    - 汇总 `docs/` 下的答辩说明和 `docs/_artifacts/` 下的关键验收产物
+    - 输出 `docs/_artifacts/acceptance-20260518-package.zip` 与对应 `manifest.json`
+    - 会自动纳入严格浏览器审计 run dir、浏览器截图、真实答辩入口彩排摘要和批量 ZIP 等证据
+
+14. `webcam_probe.py`
     - 单独检查本机摄像头是否能被项目打开
     - 默认使用隔离临时目录，不修改正式 `data/`、`uploads/`、`outputs`
     - 默认只诊断，不启动任务：`.\.venv\Scripts\python.exe scripts\webcam_probe.py`

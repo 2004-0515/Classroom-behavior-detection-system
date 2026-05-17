@@ -41,12 +41,18 @@
 powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 ```
 
+```powershell
+.\.venv\Scripts\python.exe scripts\build_acceptance_package.py
+```
+
 ## 关键证据
 
 - [verify-all-summary.json](./_artifacts/verify-all-summary.json)
 - [strict-system-audit.json](./_artifacts/strict-system-audit.json)
 - [browser-visual-audit.json](./_artifacts/browser-visual-audit.json)
 - [hardening-contracts.json](./_artifacts/hardening-contracts.json)
+- `docs/_artifacts/acceptance-20260518-package.zip`
+- `docs/_artifacts/acceptance-20260518-package.manifest.json`
 - [high-standard-audit-report.md](./high-standard-audit-report.md)
 - [demo-runbook.md](./demo-runbook.md)
 
