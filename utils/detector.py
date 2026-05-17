@@ -1,10 +1,22 @@
+import os
 import cv2
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
-from ultralytics import YOLO
 import time
 from collections import defaultdict, deque
+
+
+def _prepare_yolo_runtime() -> None:
+    project_root = Path(__file__).resolve().parent.parent
+    yolo_config_dir = Path(os.environ.get("YOLO_CONFIG_DIR") or project_root / "data" / "yolo_config")
+    yolo_config_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(yolo_config_dir))
+
+
+_prepare_yolo_runtime()
+
+from ultralytics import YOLO
 
 
 class BehaviorDetector:

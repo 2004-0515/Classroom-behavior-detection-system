@@ -10,6 +10,14 @@ import os
 import sys
 from pathlib import Path
 
+
+def prepare_yolo_runtime():
+    """确保 Ultralytics 配置写入项目本地目录，而不是仓库根目录副产物。"""
+    yolo_config_dir = Path(os.environ.get('YOLO_CONFIG_DIR') or Path(__file__).resolve().parent / 'data' / 'yolo_config')
+    yolo_config_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault('YOLO_CONFIG_DIR', str(yolo_config_dir))
+
+
 def print_header(text):
     """打印标题"""
     print("\n" + "="*60)
@@ -23,15 +31,16 @@ def check_python_version():
     print(f"Python 版本: {version.major}.{version.minor}.{version.micro}")
     
     if version.major >= 3 and version.minor >= 8:
-        print("✅ Python 版本符合要求 (3.8+)")
+        print("[OK] Python 版本符合要求 (3.8+)")
         return True
     else:
-        print("❌ Python 版本过低，需要 3.8 或更高版本")
+        print("[FAIL] Python 版本过低，需要 3.8 或更高版本")
         return False
 
 def check_dependencies():
     """检查依赖包"""
     print_header("检查依赖包")
+    prepare_yolo_runtime()
     
     required_packages = {
         'flask': 'Flask',
@@ -46,9 +55,9 @@ def check_dependencies():
     for module_name, display_name in required_packages.items():
         try:
             __import__(module_name)
-            print(f"✅ {display_name} 已安装")
+            print(f"[OK] {display_name} 已安装")
         except ImportError:
-            print(f"❌ {display_name} 未安装")
+            print(f"[FAIL] {display_name} 未安装")
             all_installed = False
     
     return all_installed
@@ -74,9 +83,9 @@ def check_directories():
     
     for dir_name in required_dirs:
         if Path(dir_name).exists():
-            print(f"✅ {dir_name}/ 存在")
+            print(f"[OK] {dir_name}/ 存在")
         else:
-            print(f"❌ {dir_name}/ 不存在")
+            print(f"[FAIL] {dir_name}/ 不存在")
             all_exist = False
     
     return all_exist
@@ -104,9 +113,9 @@ def check_files():
     
     for file_name in required_files:
         if Path(file_name).exists():
-            print(f"✅ {file_name} 存在")
+            print(f"[OK] {file_name} 存在")
         else:
-            print(f"❌ {file_name} 不存在")
+            print(f"[FAIL] {file_name} 不存在")
             all_exist = False
     
     return all_exist
@@ -117,12 +126,12 @@ def check_models():
     
     model_files = sorted(Path('models').glob('*.pt'))
     if not model_files:
-        print("⚠️  models/ 下未找到 .pt 模型文件（需要手动放置）")
+        print("[WARN] models/ 下未找到 .pt 模型文件（需要手动放置）")
         return False
 
     for model_file in model_files:
         size = model_file.stat().st_size / (1024*1024)
-        print(f"✅ {model_file.as_posix()} 存在 ({size:.1f} MB)")
+        print(f"[OK] {model_file.as_posix()} 存在 ({size:.1f} MB)")
     return True
 
 def check_gpu():
@@ -133,14 +142,14 @@ def check_gpu():
         import torch
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            print(f"✅ GPU 可用: {gpu_name}")
+            print(f"[OK] GPU 可用: {gpu_name}")
             print(f"   CUDA 版本: {torch.version.cuda}")
             return True
         else:
-            print("⚠️  GPU 不可用，将使用 CPU（速度较慢）")
+            print("[WARN] GPU 不可用，将使用 CPU（速度较慢）")
             return False
     except ImportError:
-        print("⚠️  无法检查 GPU（torch 未安装）")
+        print("[WARN] 无法检查 GPU（torch 未安装）")
         return False
 
 def test_database():
@@ -150,21 +159,21 @@ def test_database():
     try:
         from utils.database import Database
         db = Database()
-        print("✅ 数据库初始化成功")
+        print("[OK] 数据库初始化成功")
         
         # 测试创建任务
         test_task_id = "test_task_123"
         db.create_task(test_task_id, "test", "test.jpg")
-        print("✅ 数据库写入测试成功")
+        print("[OK] 数据库写入测试成功")
         
         # 测试读取
         task_info = db.get_task_info(test_task_id)
         if task_info:
-            print("✅ 数据库读取测试成功")
+            print("[OK] 数据库读取测试成功")
         
         return True
     except Exception as e:
-        print(f"❌ 数据库测试失败: {e}")
+        print(f"[FAIL] 数据库测试失败: {e}")
         return False
 
 def test_detector():
@@ -181,13 +190,13 @@ def test_detector():
         )
         
         if detector.student_model or detector.teacher_model:
-            print("✅ 检测器初始化成功")
+            print("[OK] 检测器初始化成功")
             return True
         else:
-            print("⚠️  检测器初始化成功，但未加载模型")
+            print("[WARN] 检测器初始化成功，但未加载模型")
             return False
     except Exception as e:
-        print(f"❌ 检测器测试失败: {e}")
+        print(f"[FAIL] 检测器测试失败: {e}")
         return False
 
 def print_summary(results):
@@ -203,12 +212,12 @@ def print_summary(results):
     print(f"通过率: {passed/total*100:.1f}%\n")
     
     if passed == total:
-        print("🎉 所有测试通过！系统可以正常运行。")
+        print("[OK] 所有测试通过，系统可以正常运行。")
     elif passed >= total * 0.7:
-        print("⚠️  大部分测试通过，系统基本可用。")
+        print("[WARN] 大部分测试通过，系统基本可用。")
         print("   建议解决失败的测试项以获得最佳体验。")
     else:
-        print("❌ 多个测试失败，请先解决这些问题。")
+        print("[FAIL] 多个测试失败，请先解决这些问题。")
         print("   参考 README.md 和 docs/ 目录进行修复。")
 
 def main():
