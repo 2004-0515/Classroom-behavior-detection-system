@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": {
+    "behavior.pt": {
+      "sha256": "c58012a6a698669aab3d4fc465809bc6fe84c68dcb297ce1c68e6e9f67a4c3f0",
+      "size_bytes": 6265331
+    },
+    "behavior02.pt": {
+      "sha256": "eea741498ea3decfc758769debdbd8964a0341a1a99c021853e7c8054b7463bb",
+      "size_bytes": 6265193
+    },
+    "head.pt": {
+      "sha256": "8ed306c70c42730e8c62b644612db2db143c9d4d710e1f4c3a82e0e7db2e476f",
+      "size_bytes": 6243231
+    },
+    "yolov8_trainresult_behavior/train/weights/best.pt": {
+      "sha256": "eea741498ea3decfc758769debdbd8964a0341a1a99c021853e7c8054b7463bb",
+      "size_bytes": 6265193
+    },
+    "yolov8_trainresult_behavior/train/weights/last.pt": {
+      "sha256": "d9963bacef490e8a90fa78033a0f099c1b3bc2f330db8db91a827783318a1ea5",
+      "size_bytes": 6265130
+    },
+    "yolov8_trainresult_heand/train/weights/best.pt": {
+      "sha256": "8ed306c70c42730e8c62b644612db2db143c9d4d710e1f4c3a82e0e7db2e476f",
+      "size_bytes": 6243231
+    },
+    "yolov8_trainresult_heand/train/weights/last.pt": {
+      "sha256": "204a0908afa2ffa8a8da9a7f6877476f20e09150d9ad0f9768cdeaf39c89c721",
+      "size_bytes": 6243166
+    }
+  }
+}

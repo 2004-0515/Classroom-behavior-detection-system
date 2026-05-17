@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 
 from config import Config
+from classroom_app.core.errors import ModelError
+from classroom_app.core.model_integrity import load_manifest, resolve_model_candidate, validate_model_file
 from utils.detector import BehaviorDetector
 
 MODEL_SELECTION_SOURCE_LABELS = {
@@ -21,6 +23,8 @@ MODEL_SELECTION_SOURCE_LABELS = {
 class ModelService:
     def __init__(self, config_service):
         self.config_service = config_service
+        self.model_root = Path(Config.MODEL_FOLDER).resolve()
+        self._manifest_entries = load_manifest(self.model_root)
         self._scan_cache = {"models": [], "expires_at": 0.0}
         self._env_selected_models = {
             "student": self._resolve_known_model(self._get_env_model_ref("student")),
@@ -100,10 +104,10 @@ class ModelService:
         if not force and self._scan_cache["expires_at"] > now:
             return self._scan_cache["models"]
 
-        models = BehaviorDetector.scan_models_directory(str(Config.MODEL_FOLDER))
+        models = BehaviorDetector.scan_models_directory(str(self.model_root))
         for item in models:
             try:
-                item["relative_path"] = str(Path(item["path"]).relative_to(Config.MODEL_FOLDER))
+                item["relative_path"] = str(Path(item["path"]).resolve().relative_to(self.model_root)).replace("\\", "/")
             except Exception:
                 item["relative_path"] = item["filename"]
         self._scan_cache = {
@@ -125,55 +129,64 @@ class ModelService:
         self.detector.update_parameters(confidence, iou, img_size)
 
     def load_model(self, model_type, model_ref):
-        model_path = self._resolve_model_reference(model_ref)
+        model_path = self._resolve_requested_model(model_ref)
         selected_path = self._env_selected_models.get(model_type)
         if self._env_model_lock_enabled and selected_path and Path(model_path).resolve() != Path(selected_path).resolve():
-            raise PermissionError(f"{'学生' if model_type == 'student' else '教师'}模型已由当前启动入口固定，不能在运行中切换")
+            role_name = "学生" if model_type == "student" else "教师"
+            raise ModelError(f"{role_name}模型已由当前启动入口固定，不能在运行中切换", code="model_locked", status=409)
         success = self.detector.load_model(model_type, model_path)
-        if success:
-            storage_ref = self._to_storage_reference(model_path)
-            if self._env_model_lock_enabled and selected_path:
-                self._model_selection_meta[model_type] = self._build_selection_meta(
-                    model_type,
-                    selected_path,
-                    "env_pin",
-                    requested_ref=self._get_env_model_ref(model_type),
-                    locked=True,
-                )
+        if not success:
+            raise ModelError("模型加载失败", code="model_load_failed", status=500)
+
+        storage_ref = self._to_storage_reference(model_path)
+        if self._env_model_lock_enabled and selected_path:
+            self._model_selection_meta[model_type] = self._build_selection_meta(
+                model_type,
+                selected_path,
+                "env_pin",
+                requested_ref=self._get_env_model_ref(model_type),
+                locked=True,
+            )
+        else:
+            if model_type == "student":
+                self.config_service.save_last_models(student_model=storage_ref)
             else:
-                if model_type == "student":
-                    self.config_service.save_last_models(student_model=storage_ref)
-                else:
-                    self.config_service.save_last_models(teacher_model=storage_ref)
-                self._model_selection_meta[model_type] = self._build_selection_meta(
-                    model_type,
-                    model_path,
-                    "manual_selection",
-                    requested_ref=storage_ref,
-                )
-        return success, model_path
+                self.config_service.save_last_models(teacher_model=storage_ref)
+            self._model_selection_meta[model_type] = self._build_selection_meta(
+                model_type,
+                model_path,
+                "manual_selection",
+                requested_ref=storage_ref,
+            )
+        return True, model_path
 
-    def _resolve_model_reference(self, model_ref):
-        resolved = self._resolve_known_model(model_ref)
-        if resolved:
-            return resolved
-
-        for model in self.scan_models():
-            if model_ref in {model["filename"], model.get("relative_path", "")}:
-                return model["path"]
-        raise FileNotFoundError("模型文件不存在")
+    def _resolve_requested_model(self, model_ref):
+        candidate, _ = resolve_model_candidate(model_ref, self.model_root)
+        validated = validate_model_file(candidate, self.model_root, manifest=self._manifest_entries)
+        return str(validated)
 
     def _resolve_known_model(self, model_ref):
         if not model_ref:
             return None
-        normalized_ref = str(model_ref).replace("\\", "/")
+        normalized_ref = str(model_ref).strip().replace("\\", "/")
         direct_path = Path(normalized_ref)
-        if direct_path.exists():
-            return str(direct_path.resolve())
+        if direct_path.is_absolute():
+            try:
+                resolved = direct_path.resolve()
+                resolved.relative_to(self.model_root)
+            except Exception:
+                return None
+            if resolved.exists():
+                return str(resolved)
+            return None
 
-        candidate = Path(Config.MODEL_FOLDER) / normalized_ref
+        candidate = (self.model_root / normalized_ref).resolve()
+        try:
+            candidate.relative_to(self.model_root)
+        except Exception:
+            return None
         if candidate.exists():
-            return str(candidate.resolve())
+            return str(candidate)
         return None
 
     def _get_env_model_ref(self, role):
@@ -201,6 +214,6 @@ class ModelService:
             return None
         path = Path(model_path)
         try:
-            return path.resolve().relative_to(Path(Config.MODEL_FOLDER).resolve()).as_posix()
+            return path.resolve().relative_to(self.model_root).as_posix()
         except Exception:
             return str(path)

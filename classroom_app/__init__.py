@@ -9,6 +9,7 @@ from flask_login import LoginManager
 
 from config import Config, create_directories
 from classroom_app.core.auth import AdminUser
+from classroom_app.core.model_integrity import ensure_model_manifest_valid
 from classroom_app.routes.auth import bp as auth_bp
 from classroom_app.routes.dashboard import bp as dashboard_bp
 from classroom_app.routes.detect import bp as detect_bp
@@ -53,6 +54,7 @@ def _build_services():
 
 
 def create_app():
+    ensure_model_manifest_valid(Config.MODEL_FOLDER)
     create_directories()
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config.from_object(Config)

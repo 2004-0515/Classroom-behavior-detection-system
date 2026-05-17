@@ -1,9 +1,15 @@
 import os
+import sys
 
 from classroom_app import create_app
+from classroom_app.core.errors import AppError
 from config import Config
 
-app = create_app()
+try:
+    app = create_app()
+except AppError as exc:
+    print(f"应用启动失败 [{exc.code}]: {exc.message}", file=sys.stderr)
+    raise SystemExit(1) from None
 
 
 def _resolve_bind_settings():

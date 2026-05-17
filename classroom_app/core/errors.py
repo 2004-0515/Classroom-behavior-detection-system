@@ -16,8 +16,8 @@ class InputError(AppError):
 
 
 class ModelError(AppError):
-    def __init__(self, message: str, *, code: str = "model_error"):
-        super().__init__(message, code=code, status=500, category="model")
+    def __init__(self, message: str, *, code: str = "model_error", status: int = 500):
+        super().__init__(message, code=code, status=status, category="model")
 
 
 class MediaError(AppError):

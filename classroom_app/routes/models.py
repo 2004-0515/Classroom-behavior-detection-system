@@ -3,7 +3,8 @@ from __future__ import annotations
 from flask import Blueprint, current_app, request
 from flask_login import login_required
 
-from classroom_app.core.api import api_error, api_success
+from classroom_app.core.api import api_error_from_exception, api_success
+from classroom_app.core.errors import AppError, InputError
 
 bp = Blueprint("models", __name__, url_prefix="/api/models")
 
@@ -28,20 +29,14 @@ def model_info():
 @bp.route("/load", methods=["POST"])
 @login_required
 def load_model():
-    payload = request.get_json(silent=True) or {}
-    model_type = payload.get("type")
-    model_ref = payload.get("model")
-    if model_type not in {"student", "teacher"} or not model_ref:
-        return api_error("参数不完整", status=400)
-
     try:
-        success, model_path = _services().models.load_model(model_type, model_ref)
-        if not success:
-            return api_error("模型加载失败", code="model_load_failed", status=500)
+        payload = request.get_json(silent=True) or {}
+        model_type = payload.get("type")
+        model_ref = payload.get("model")
+        if model_type not in {"student", "teacher"} or not model_ref:
+            raise InputError("参数不完整")
+
+        _, model_path = _services().models.load_model(model_type, model_ref)
         return api_success({"path": model_path}, "模型加载成功")
-    except PermissionError as exc:
-        return api_error(str(exc), code="model_locked", status=409)
-    except FileNotFoundError as exc:
-        return api_error(str(exc), status=404)
-    except Exception as exc:
-        return api_error(str(exc), code="model_load_failed", status=500)
+    except AppError as exc:
+        return api_error_from_exception(exc)

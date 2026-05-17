@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import json
 import os
 import pathlib
 import py_compile
@@ -7,9 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import importlib
 from pathlib import Path
-import json
 
 from isolated_env import create_and_apply_isolated_runtime
 
@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runtime_paths import resolve_node
+from classroom_app.core.errors import ModelError
+from classroom_app.core.model_integrity import validate_model_file, verify_model_manifest
+from runtime_paths import NODE_FALLBACK, resolve_node, resolve_python
 
 
 # Read-only baseline checks that should be cheap and environment-safe.
@@ -31,6 +33,7 @@ PYTHON_PACKAGE_CHECKS = [
     ("ultralytics", "Ultralytics YOLO"),
     ("requests", "Requests HTTP 客户端"),
 ]
+MODEL_ROOT = ROOT / "models"
 
 
 def compile_python():
@@ -46,17 +49,30 @@ def compile_python():
 
 
 def check_frontend():
-    node = resolve_node()
-    if not node:
-        return ["未找到可用 node，无法执行 static/app/main.js 语法检查"]
     source = ROOT / "static" / "app" / "main.js"
     with tempfile.TemporaryDirectory(prefix="classroom-frontend-check-") as temp_dir:
         temp_entry = Path(temp_dir) / "main.mjs"
         temp_entry.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        result = subprocess.run([str(node), "--check", str(temp_entry)], capture_output=True, text=True)
-    if result.returncode == 0:
-        return []
-    return [result.stderr.strip() or result.stdout.strip() or "node --check 失败"]
+        failures = []
+        candidates = []
+        primary = resolve_node()
+        if primary:
+            candidates.append(primary)
+        if NODE_FALLBACK.exists() and NODE_FALLBACK not in candidates:
+            candidates.append(NODE_FALLBACK)
+        if not candidates:
+            return ["未找到可用 node，无法执行 static/app/main.js 语法检查"]
+
+        for node in candidates:
+            try:
+                result = subprocess.run([str(node), "--check", str(temp_entry)], capture_output=True, text=True)
+            except OSError as exc:
+                failures.append(f"{node}: {exc}")
+                continue
+            if result.returncode == 0:
+                return []
+            failures.append(result.stderr.strip() or result.stdout.strip() or f"node --check 失败: {node}")
+    return failures
 
 
 def check_python_packages():
@@ -89,13 +105,13 @@ def _resolve_model_reference(model_ref: str | None) -> Path | None:
     rooted = ROOT / candidate
     if rooted.exists():
         return rooted
-    return ROOT / "models" / candidate
+    return MODEL_ROOT / candidate
 
 
 def _collect_required_models():
     required_models: list[tuple[str, Path]] = [
-        ("默认学生模型", ROOT / "models" / "behavior.pt"),
-        ("默认教师模型", ROOT / "models" / "head.pt"),
+        ("默认学生模型", MODEL_ROOT / "behavior.pt"),
+        ("默认教师模型", MODEL_ROOT / "head.pt"),
     ]
 
     explicit_student = _resolve_model_reference(os.environ.get("STUDENT_MODEL_PATH"))
@@ -123,11 +139,15 @@ def _collect_required_models():
 
 
 def check_model_assets():
-    failures = []
-    required_models = _collect_required_models()
+    failures: list[str] = []
+    try:
+        failures.extend(verify_model_manifest(MODEL_ROOT))
+    except ModelError as exc:
+        failures.append(f"{exc.code}: {exc.message}")
+        return failures
 
     seen: set[str] = set()
-    for label, path in required_models:
+    for label, path in _collect_required_models():
         if "__invalid_user_config__" in str(path):
             failures.append(label)
             continue
@@ -135,20 +155,10 @@ def check_model_assets():
         if normalized in seen:
             continue
         seen.add(normalized)
-        if not path.exists():
-            try:
-                display = path.relative_to(ROOT).as_posix()
-            except ValueError:
-                display = str(path)
-            failures.append(f"{label}缺失: {display}")
-            continue
-        if path.stat().st_size <= 0:
-            try:
-                display = path.relative_to(ROOT).as_posix()
-            except ValueError:
-                display = str(path)
-            failures.append(f"{label}为空: {display}")
-
+        try:
+            validate_model_file(path, MODEL_ROOT)
+        except ModelError as exc:
+            failures.append(f"{label}: {exc.message}")
     return failures
 
 
@@ -160,7 +170,7 @@ def check_routes():
         "healthcheck",
         admin_username="healthcheck_admin",
         admin_password="healthcheck_pass_123",
-        model_folder=ROOT / "models",
+        model_folder=MODEL_ROOT,
     )
 
     from classroom_app import create_app
@@ -188,16 +198,23 @@ def check_routes():
 
 
 def check_runtime_helpers():
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "runtime_paths_test.py")],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        return []
-    output = result.stderr.strip() or result.stdout.strip() or "runtime_paths_test.py 执行失败"
-    return [output]
+    python = resolve_python(current_python=sys.executable)
+    if not python:
+        return ["未找到可用 python，无法执行运行时 helper 自检"]
+
+    failures = []
+    for script_name in ["runtime_paths_test.py", "model_integrity_test.py"]:
+        result = subprocess.run(
+            [str(python), str(ROOT / "scripts" / script_name)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            continue
+        output = result.stderr.strip() or result.stdout.strip() or f"{script_name} 执行失败"
+        failures.append(output)
+    return failures
 
 
 def print_section(title, failures):

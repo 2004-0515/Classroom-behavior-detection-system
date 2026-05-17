@@ -165,6 +165,18 @@ def run_upload_and_api_edges() -> list[dict]:
                     "webcam_unready",
                     "browser webcam stop requires task id",
                 ),
+                assert_error(
+                    client.post("/api/models/load", json={"type": "student", "model": str(ROOT / "models" / "behavior.pt")}),
+                    409,
+                    "model_not_approved",
+                    "model switch rejects absolute path references",
+                ),
+                assert_error(
+                    client.post("/api/models/load", json={"type": "student", "model": "missing-unapproved.pt"}),
+                    409,
+                    "model_not_approved",
+                    "model switch rejects unapproved manifest entries",
+                ),
             ]
             diagnostics = client.get("/api/streams/webcam/diagnostics?camera_index=99")
             assert_status(diagnostics, 200, "webcam diagnostics endpoint")
