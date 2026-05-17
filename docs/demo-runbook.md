@@ -10,8 +10,9 @@ verify_classroom_app.bat
 
 预期结果：
 
-- `healthcheck` / `startup_smoke` / `interaction_smoke` / `regression_smoke` / `hardening_contracts` / `browser_visual_audit` 全部 `OK`
+- `healthcheck` / `startup_smoke` / `interaction_smoke` / `regression_smoke` / `hardening_contracts` / `strict_system_audit` / `browser_visual_audit` 全部 `OK`
 - 最新汇总产物写入 `docs/_artifacts/verify-all-summary.json`
+- 当前已推送验收基线：git tag `acceptance-20260518`，commit `7e2fdb3`
 
 如需在答辩前一晚把真实答辩入口完整彩排一遍，可执行：
 
@@ -93,9 +94,11 @@ start_demo_session.bat --preflight-only
 
 - 如果要核对最近一次验收时间：
   - `docs/_artifacts/verify-all-summary.json`
+  - `docs/_artifacts/strict-system-audit.json`
   - `docs/_artifacts/browser-visual-audit.json`
   - `docs/_artifacts/hardening-contracts.json`
   - `docs/_artifacts/real-demo-service-audit.json`
+  - `git show acceptance-20260518 --no-patch --stat`
 
 ## 6. 结束后
 

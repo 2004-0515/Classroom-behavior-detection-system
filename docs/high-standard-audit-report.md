@@ -1,6 +1,6 @@
 # 高标准审计报告
 
-生成日期：以 `docs/_artifacts/verify-all-summary.json` 与 `docs/_artifacts/real-demo-service-audit.json` 为准
+最新验收基线：2026-05-18，git tag `acceptance-20260518`，commit `7e2fdb3`。产物时间以 `docs/_artifacts/verify-all-summary.json`、`docs/_artifacts/strict-system-audit.json` 与 `docs/_artifacts/real-demo-service-audit.json` 为准
 
 ## 审计目标
 
@@ -18,9 +18,10 @@
 
 - `scripts/audit_readiness.py` 已通过，且确认真实 `data/admin_config.json`、`data/user_config.json`、`data/detections.db`、`uploads`、`outputs` 状态未被审计脚本改变。
 - `scripts/browser_visual_audit.ps1` 已通过，使用本机 Edge headless 生成真实浏览器截图。
+- `scripts/strict_system_audit.py` 已通过，`docs/_artifacts/strict-system-audit.json` 当前为 `overall_status=passed`、`issues=[]`，覆盖 14 条真实浏览器流转，包含 1440 / 1366 / 390 三种视口。
 - `scripts/webcam_probe.py --live-seconds 2` 已复跑通过，本机 `0` 号摄像头可通过 `CAP_DSHOW` 打开并读取 `640x480` 画面，实时任务可启动、停止并保存原图/结果图；当前脚本默认写入隔离临时目录，不污染正式项目状态。
 - 批量上传“不支持文件格式时静默跳过”的风险已修复为明确返回 `400 unsupported_file`。
-- 最近一次一键总验收结果以 `docs/_artifacts/verify-all-summary.json` 为准；当前验收链覆盖 `healthcheck`、`startup_smoke`、`frontend_service_tests`、`ui_smoke`、`interaction_smoke`、`regression_smoke`、`hardening_contracts`、`audit_readiness`、`browser_visual_audit`。
+- 最近一次一键总验收结果以 `docs/_artifacts/verify-all-summary.json` 为准；2026-05-18 这次验收为 `overall_status=OK`，当前验收链覆盖 `healthcheck`、`startup_smoke`、`frontend_service_tests`、`ui_smoke`、`interaction_smoke`、`regression_smoke`、`hardening_contracts`、`audit_readiness`、`strict_system_audit`、`browser_visual_audit`。
 - 真实 `start_demo_session.bat` 入口的整链路演练结果已写入 `docs/_artifacts/real-demo-service-audit.json`，并补充了 `docs/_artifacts/real-demo-full-browser-summary.json` 与对应截图。
 - 答辩启动入口会默认从 `models/behavior.pt` 与 `models/head.pt` 启动，同时保留运行时模型切换与其余界面功能；交互烟测已验证答辩入口下仍可切换到 `behavior02.pt`。
 
@@ -28,6 +29,10 @@
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\audit_readiness.py
+```
+
+```powershell
+.\.venv\Scripts\python.exe scripts\strict_system_audit.py
 ```
 
 ```powershell
@@ -40,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 .\.venv\Scripts\python.exe scripts\verify_all.py
 ```
 
-当前总验收也会运行浏览器截图审计；若需要单独复现该项，仍可直接执行上面的 PowerShell 命令。
+当前总验收会同时运行 `strict_system_audit.py` 与浏览器截图审计；若需要单独复现其中任一项，可直接执行上面的命令。
 
 真实答辩入口整链路彩排：
 
@@ -84,6 +89,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 - `docs/_artifacts/browser-audit-webcam.png`
 - `docs/_artifacts/browser-audit-report.png`
 - `docs/_artifacts/browser-visual-audit.json`
+- `docs/_artifacts/strict-system-audit.json`
+- `docs/_artifacts/strict-system-audit-20260518-012619/`
 - `docs/_artifacts/verify-all-summary.json`
 - `docs/_artifacts/hardening-contracts.json`
 
@@ -91,5 +98,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 
 - `config.py` 支持通过环境变量覆盖数据库、上传目录、输出目录、用户配置、管理员配置、运行时密钥和 YOLO 配置目录，便于隔离审计和可移植部署。
 - `classroom_app/services/detection_service.py` 对批量上传中的不支持文件格式改为明确失败，避免现场误选文件后出现“假成功”。
-- 新增 `scripts/audit_readiness.py`、`scripts/audit_server.py`、`scripts/browser_visual_audit.ps1`。
-- `scripts/verify_all.py` 已纳入 `audit_readiness.py` 与 `browser_visual_audit.ps1`。
+- 新增 `scripts/audit_readiness.py`、`scripts/audit_server.py`、`scripts/strict_system_audit.py`、`static/app/scripts/strict-system-audit.cjs`、`scripts/browser_visual_audit.ps1`。
+- `scripts/verify_all.py` 已纳入 `audit_readiness.py`、`strict_system_audit.py` 与 `browser_visual_audit.ps1`。

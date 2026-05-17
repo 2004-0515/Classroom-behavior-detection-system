@@ -63,6 +63,8 @@ start_demo_session.bat
 
 建议先跑一次总验收：
 
+- 当前已推送验收基线：git tag `acceptance-20260518`，commit `7e2fdb3`
+
 ```powershell
 .\.venv\Scripts\python.exe scripts\verify_all.py
 ```
@@ -88,7 +90,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1
 - `ui_smoke` 通过
 - `interaction_smoke` 通过
 - `regression_smoke` 通过
+- `hardening_contracts` 通过
 - `audit_readiness` 通过
+- `strict_system_audit` 通过
 - `browser_visual_audit` 通过
 - 如已执行真实答辩入口彩排，则 `docs/_artifacts/real-demo-service-audit.json` 已生成
 - 摄像头若当前机器无设备，允许结果为 `blocked:no_camera`
