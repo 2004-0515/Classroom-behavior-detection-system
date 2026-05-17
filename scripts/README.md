@@ -90,7 +90,13 @@
     - 输出 `docs/_artifacts/acceptance-20260518-package.zip` 与对应 `manifest.json`
     - 会自动纳入严格浏览器审计 run dir、浏览器截图、真实答辩入口彩排摘要和批量 ZIP 等证据
 
-14. `webcam_probe.py`
+14. `verify_acceptance_package.py`
+    - 校验 `acceptance-20260518-package.zip` 与 sidecar manifest 是否一致
+    - 默认逐项验证 zip 内文件路径、大小和 `sha256`
+    - `--check-live-files` 可额外校验当前工作区中的源文件仍与 manifest 一致
+    - 若想从仓库根目录直接运行，可使用 `verify_acceptance_package.bat`
+
+15. `webcam_probe.py`
     - 单独检查本机摄像头是否能被项目打开
     - 默认使用隔离临时目录，不修改正式 `data/`、`uploads/`、`outputs`
     - 默认只诊断，不启动任务：`.\.venv\Scripts\python.exe scripts\webcam_probe.py`

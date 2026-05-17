@@ -115,6 +115,12 @@ build_acceptance_package.bat
 - `docs/_artifacts/acceptance-20260518-package.zip`
 - `docs/_artifacts/acceptance-20260518-package.manifest.json`
 
+如需在交付前独立验包，可执行：
+
+```bat
+verify_acceptance_package.bat --check-live-files
+```
+
 若要单独验证本机摄像头，也可以执行：
 
 ```powershell

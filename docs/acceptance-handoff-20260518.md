@@ -51,6 +51,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\browser_visual_audit.ps1
 build_acceptance_package.bat
 ```
 
+```bat
+verify_acceptance_package.bat --check-live-files
+```
+
 ## 关键证据
 
 - [verify-all-summary.json](./_artifacts/verify-all-summary.json)
