@@ -11,7 +11,7 @@
 
 2. `demo_preflight.py`
    - 答辩前快速只读预检
-   - 检查虚拟环境关键 Python 依赖、管理员配置、默认模型与当前实际模型、固定演示素材、浏览器、根目录入口、完整验收产物与 `127.0.0.1:5000` 端口
+   - 检查 Python 运行时、关键 Python 依赖、管理员配置、默认模型与当前实际模型、固定演示素材、浏览器、根目录入口、完整验收产物与 `127.0.0.1:5000` 端口
    - 要求 `docs/_artifacts/` 下完整验收产物存在且不超过 24 小时；不满足则直接失败
    - 若想从仓库根目录直接运行，可使用 `demo_preflight.bat`
 
@@ -80,9 +80,9 @@
 12. `webcam_probe.py`
     - 单独检查本机摄像头是否能被项目打开
     - 默认使用隔离临时目录，不修改正式 `data/`、`uploads/`、`outputs`
-    - 默认只诊断，不启动任务：`.venv\Scripts\python.exe scripts\webcam_probe.py`
-    - 如需真实启动并停止一次：`.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2`
-    - 如需保留隔离产物便于检查：`.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2 --keep-temp`
+    - 默认只诊断，不启动任务：`.\.venv\Scripts\python.exe scripts\webcam_probe.py`
+    - 如需真实启动并停止一次：`.\.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2`
+    - 如需保留隔离产物便于检查：`.\.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2 --keep-temp`
     - 只有在明确需要写入正式项目状态时，才使用 `--use-real-state`
 
 辅助脚本：
@@ -91,11 +91,19 @@
   - 初始化本地管理员账号
 
 - `runtime_paths.py`
-  - 统一解析 `node` 运行时
-  - 优先使用系统 PATH，找不到时回退到 bundled runtime
+  - 统一解析 `python` / `node` 运行时
+  - `python` 优先顺序：`CLASSROOM_PYTHON` -> 当前解释器 -> `ROOT/.venv/Scripts/python.exe` -> PATH 中的 `python`
+  - `node` 优先使用系统 PATH，找不到时回退到 bundled runtime
 
 - `runtime_paths_test.py`
-  - 校验 `runtime_paths.resolve_node()` 的优先级与 fallback 行为
+  - 校验 `runtime_paths.resolve_python()` / `resolve_node()` 的优先级与 fallback 行为
+
+- `model_checksum_manifest.py`
+  - 维护 `models/checksums.json`
+  - 默认校验当前 `models/**/*.pt` 与清单是否一致，`--rewrite` 用于明确换模后的重写确认
+
+- `model_integrity_test.py`
+  - 校验模型完整性清单的 round-trip、未登记模型、篡改模型和坏清单场景
 
 - `demo_runtime_contract.py`
   - 供 `demo_preflight.py` 与 `real_demo_service_audit.py` 复用的本地答辩入口契约探测辅助模块

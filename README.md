@@ -26,7 +26,7 @@
 安装依赖：
 
 ```powershell
-.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ## 首次初始化
@@ -37,7 +37,7 @@
 - 管理员账号：首次使用前执行
 
 ```powershell
-.\.venv\Scripts\python scripts\init_local_admin.py --username admin --password "your-password"
+.\.venv\Scripts\python.exe scripts\init_local_admin.py --username admin --password "your-password"
 ```
 
 生成的 `data/admin_config.json` 已加入 `.gitignore`，不会作为仓库默认配置提交。  
@@ -62,7 +62,7 @@ start_classroom_app.bat
 底层直接启动方式：
 
 ```powershell
-.\.venv\Scripts\python app.py
+.\.venv\Scripts\python.exe app.py
 ```
 
 访问：
@@ -93,7 +93,7 @@ start_demo_session.bat --preflight-only
 若要把真实答辩入口从启动到单图、批量、视频、历史导出、摄像头诊断/启停完整复跑，可执行：
 
 ```powershell
-.\.venv\Scripts\python scripts\real_demo_service_audit.py
+.\.venv\Scripts\python.exe scripts\real_demo_service_audit.py
 ```
 
 或直接执行：
@@ -107,7 +107,7 @@ real_demo_service_audit.bat
 若要单独验证本机摄像头，也可以执行：
 
 ```powershell
-.\.venv\Scripts\python scripts\webcam_probe.py --live-seconds 2
+.\.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2
 ```
 
 这个脚本会真实启动一次本机摄像头任务，但默认使用隔离临时目录，不会修改正式 `data/`、`uploads/`、`outputs/`。
@@ -115,7 +115,7 @@ real_demo_service_audit.bat
 若你确实需要把摄像头探测结果写入正式项目目录，显式执行：
 
 ```powershell
-.\.venv\Scripts\python scripts\webcam_probe.py --live-seconds 2 --use-real-state
+.\.venv\Scripts\python.exe scripts\webcam_probe.py --live-seconds 2 --use-real-state
 ```
 
 ## 健康检查
@@ -123,13 +123,13 @@ real_demo_service_audit.bat
 项目提供正式的只读健康检查入口，不会写入正式数据库或正式上传/输出目录：
 
 ```powershell
-.\.venv\Scripts\python scripts\healthcheck.py
+.\.venv\Scripts\python.exe scripts\healthcheck.py
 ```
 
 一键总验收：
 
 ```powershell
-.\.venv\Scripts\python scripts\verify_all.py
+.\.venv\Scripts\python.exe scripts\verify_all.py
 ```
 
 或：
@@ -193,7 +193,7 @@ verify_classroom_app.bat
 若只需快速回归前端 service：
 
 ```powershell
-.\.venv\Scripts\python scripts\frontend_service_tests.py
+.\.venv\Scripts\python.exe scripts\frontend_service_tests.py
 ```
 
 或：
@@ -205,7 +205,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\frontend_service_tests.ps1
 页面结构烟测：
 
 ```powershell
-.\.venv\Scripts\python scripts/ui_smoke.py
+.\.venv\Scripts\python.exe scripts\ui_smoke.py
 ```
 
 当前覆盖：
@@ -216,7 +216,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\frontend_service_tests.ps1
 交互契约烟测：
 
 ```powershell
-.\.venv\Scripts\python scripts/interaction_smoke.py
+.\.venv\Scripts\python.exe scripts\interaction_smoke.py
 ```
 
 当前覆盖：
@@ -229,7 +229,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\frontend_service_tests.ps1
 业务回归烟测：
 
 ```powershell
-.\.venv\Scripts\python scripts/regression_smoke.py
+.\.venv\Scripts\python.exe scripts\regression_smoke.py
 ```
 
 当前覆盖：

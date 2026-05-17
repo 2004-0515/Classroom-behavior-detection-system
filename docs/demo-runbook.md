@@ -16,7 +16,7 @@ verify_classroom_app.bat
 如需在答辩前一晚把真实答辩入口完整彩排一遍，可执行：
 
 ```powershell
-.\.venv\Scripts\python scripts\real_demo_service_audit.py
+.\.venv\Scripts\python.exe scripts\real_demo_service_audit.py
 ```
 
 或：

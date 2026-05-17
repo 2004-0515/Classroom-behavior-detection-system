@@ -32,7 +32,7 @@ start_demo_session.bat --preflight-only
 如果要对真实答辩入口做一遍完整彩排：
 
 ```powershell
-.\.venv\Scripts\python scripts\real_demo_service_audit.py
+.\.venv\Scripts\python.exe scripts\real_demo_service_audit.py
 ```
 
 或：
@@ -55,7 +55,7 @@ start_demo_session.bat
 
 ## 1. 演示前一天
 
-- 确认虚拟环境存在：`.\.venv\Scripts\python.exe`
+- 确认可用 Python 运行时：优先 `CLASSROOM_PYTHON`，其次 `.\.venv\Scripts\python.exe`，再次是 PATH 中的 `python`
 - 确认模型文件存在于 `models/`
 - 确认演示素材存在于 `testfile/`
 - 确认本地管理员账号已经初始化过
@@ -64,7 +64,7 @@ start_demo_session.bat
 建议先跑一次总验收：
 
 ```powershell
-.\.venv\Scripts\python scripts\verify_all.py
+.\.venv\Scripts\python.exe scripts\verify_all.py
 ```
 
 若只想先做答辩前提项检查，可运行：
@@ -106,7 +106,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1
 如本地管理员账号未初始化，先执行：
 
 ```powershell
-.\.venv\Scripts\python scripts\init_local_admin.py --username admin --password "请替换为你自己的密码"
+.\.venv\Scripts\python.exe scripts\init_local_admin.py --username admin --password "请替换为你自己的密码"
 ```
 
 推荐直接使用答辩入口启动应用：
@@ -124,7 +124,7 @@ start_demo_session.bat
 若需要手动低层启动：
 
 ```powershell
-.\.venv\Scripts\python app.py
+.\.venv\Scripts\python.exe app.py
 ```
 
 - 启动后确认浏览器可访问 `http://127.0.0.1:5000`

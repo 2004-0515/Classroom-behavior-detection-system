@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import socket
 import time
 import argparse
 import importlib
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -14,6 +14,13 @@ from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from classroom_app.core.errors import ModelError
+from classroom_app.core.model_integrity import validate_model_file, verify_model_manifest
+from runtime_paths import NODE_FALLBACK, PYTHON_ENV_VAR, PYTHON_FALLBACK, resolve_node, resolve_python
+MODEL_ROOT = ROOT / "models"
 DEMO_HOST = "127.0.0.1"
 DEMO_PORT = 5000
 DEMO_URL = f"http://{DEMO_HOST}:{DEMO_PORT}"
@@ -90,7 +97,7 @@ def resolve_model_reference(model_ref: str | None) -> Path | None:
     rooted = ROOT / candidate
     if rooted.exists():
         return rooted
-    return ROOT / "models" / candidate
+    return MODEL_ROOT / candidate
 
 
 def collect_required_models():
@@ -157,19 +164,21 @@ def inspect_running_demo_entry_contract():
 
 
 def check_python_runtime():
-    path = ROOT / ".venv" / "Scripts" / "python.exe"
-    if path.exists():
+    python = resolve_python(current_python=sys.executable)
+    if python:
         return ok()
-    return fail(f"缺少虚拟环境 Python: {path.relative_to(ROOT)}")
+    return fail(
+        f"未找到可用 Python 运行时；可设置 {PYTHON_ENV_VAR}，"
+        f"或准备 {PYTHON_FALLBACK.relative_to(ROOT).as_posix()}，"
+        "或确保 PATH 中有 python"
+    )
 
 
 def check_node_runtime():
-    if shutil.which("node"):
+    node = resolve_node()
+    if node:
         return ok()
-    bundled = ROOT / ".deps" / "node" / "node.exe"
-    if bundled.exists():
-        return ok()
-    return fail("未找到系统 node，且未发现 bundled node.exe")
+    return fail(f"未找到可用 node；请确保 PATH 中存在 node，或准备 bundled runtime: {NODE_FALLBACK}")
 
 
 def check_python_packages():
@@ -191,7 +200,7 @@ def check_admin_config():
     if not path.exists():
         return fail(
             "缺少管理员配置: data/admin_config.json；请执行 "
-            r'.\.venv\Scripts\python scripts\init_local_admin.py --username admin --password "请替换为你自己的密码"'
+            r'.\.venv\Scripts\python.exe scripts\init_local_admin.py --username admin --password "请替换为你自己的密码"'
         )
 
     try:
@@ -212,8 +221,12 @@ def check_admin_config():
 
 def check_models():
     failures = []
-    required_models = collect_required_models()
+    try:
+        failures.extend(verify_model_manifest(MODEL_ROOT))
+    except ModelError as exc:
+        return [f"{exc.code}: {exc.message}"], []
 
+    required_models = collect_required_models()
     seen: set[str] = set()
     for label, path in required_models:
         if "__invalid_user_config__" in str(path):
@@ -223,19 +236,10 @@ def check_models():
         if normalized in seen:
             continue
         seen.add(normalized)
-        if not path.exists():
-            try:
-                display = path.relative_to(ROOT).as_posix()
-            except ValueError:
-                display = str(path)
-            failures.append(f"{label}缺失: {display}")
-            continue
-        if path.stat().st_size <= 0:
-            try:
-                display = path.relative_to(ROOT).as_posix()
-            except ValueError:
-                display = str(path)
-            failures.append(f"{label}为空: {display}")
+        try:
+            validate_model_file(path, MODEL_ROOT)
+        except ModelError as exc:
+            failures.append(f"{label}: {exc.message}")
     return failures, []
 
 
@@ -427,7 +431,7 @@ def main():
         raise SystemExit(0 if inspection["ok"] else 1)
 
     checks = [
-        ("虚拟环境", *check_python_runtime()),
+        ("Python 运行时", *check_python_runtime()),
         ("Python 依赖", *check_python_packages()),
         ("Node 运行时", *check_node_runtime()),
         ("管理员配置", *check_admin_config()),
