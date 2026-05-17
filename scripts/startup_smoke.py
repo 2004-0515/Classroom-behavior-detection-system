@@ -11,10 +11,11 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from isolated_env import create_isolated_runtime
+from runtime_paths import PYTHON_ENV_VAR, resolve_python
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+PYTHON = resolve_python(current_python=sys.executable)
 HOST = "127.0.0.1"
 PORT = 5051
 BASE_URL = f"http://{HOST}:{PORT}"
@@ -54,8 +55,8 @@ def read_admin_username(path: Path) -> str | None:
 
 
 def main() -> int:
-    if not PYTHON.exists():
-        print(f"未找到虚拟环境 Python: {PYTHON}")
+    if not PYTHON:
+        print("未找到可用 Python 运行时")
         return 1
 
     runtime = create_isolated_runtime(
@@ -74,6 +75,7 @@ def main() -> int:
             "PYTHONUTF8": "1",
             "APP_HOST": HOST,
             "APP_PORT": str(PORT),
+            PYTHON_ENV_VAR: str(PYTHON),
         },
     )
 
@@ -114,6 +116,7 @@ def main() -> int:
         print("启动烟测通过。")
         print(f"- URL: {BASE_URL}/")
         print(f"- 临时管理员: {bootstrapped_username}")
+        print(f"- Python: {PYTHON}")
         return 0
     except Exception as exc:
         print(f"启动烟测异常: {exc}")

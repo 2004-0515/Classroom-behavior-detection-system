@@ -13,8 +13,13 @@ TEST_FILE = ROOT / "static" / "app" / "services" / "task-services.test.js"
 
 # Fast regression entrypoint for frontend service-layer behavior.
 def main() -> int:
-    node = resolve_node()
-    if not node:
+    candidates = []
+    primary = resolve_node()
+    if primary:
+        candidates.append(primary)
+    if NODE_FALLBACK.exists() and NODE_FALLBACK not in candidates:
+        candidates.append(NODE_FALLBACK)
+    if not candidates:
         print(f"未找到可用 Node.js，可检查系统 PATH 或 bundled runtime: {NODE_FALLBACK}")
         return 1
     if not TEST_FILE.exists():
@@ -23,8 +28,18 @@ def main() -> int:
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    result = subprocess.run([str(node), "--test", str(TEST_FILE)], cwd=ROOT, env=env)
-    return result.returncode
+    failures = []
+    for node in candidates:
+        try:
+            result = subprocess.run([str(node), "--test", str(TEST_FILE)], cwd=ROOT, env=env)
+        except OSError as exc:
+            failures.append(f"{node}: {exc}")
+            continue
+        return result.returncode
+
+    for item in failures:
+        print(item)
+    return 1
 
 
 if __name__ == "__main__":

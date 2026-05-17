@@ -1,11 +1,28 @@
 param(
     [int]$Port = 5001,
-    [int]$ScreenshotTimeoutSeconds = 75
+    [int]$ScreenshotTimeoutSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$python = Join-Path $root ".venv\Scripts\python.exe"
+$python = $null
+if ($env:CLASSROOM_PYTHON -and (Test-Path $env:CLASSROOM_PYTHON)) {
+    $python = $env:CLASSROOM_PYTHON
+} else {
+    $venvPython = Join-Path $root ".venv\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        $python = $venvPython
+    } else {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($pythonCommand) {
+            $python = $pythonCommand.Source
+        }
+    }
+}
+if (-not $python) {
+    throw "Python runtime was not found; browser visual audit cannot run."
+}
+$env:CLASSROOM_PYTHON = $python
 $serverScript = Join-Path $root "scripts\audit_server.py"
 $artifactDir = Join-Path $root "docs\_artifacts"
 New-Item -ItemType Directory -Force $artifactDir | Out-Null
@@ -30,7 +47,7 @@ if (-not $browser) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$profileDir = Join-Path $artifactDir "chrome-profile-$timestamp"
+
 $batchZipPath = Join-Path $artifactDir "browser-audit-batch-$timestamp.zip"
 $outLog = Join-Path $artifactDir "browser_audit_server.out.log"
 $errLog = Join-Path $artifactDir "browser_audit_server.err.log"
@@ -63,39 +80,58 @@ function Capture-Page {
         [string]$Output,
         [string]$Size = "1440,1000"
     )
-    $args = @(
-        "--headless",
-        "--no-sandbox",
-        "--disable-gpu",
-        "--disable-gpu-compositing",
-        "--disable-software-rasterizer",
-        "--disable-features=VizDisplayCompositor",
-        "--disable-extensions",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--user-data-dir=$profileDir",
-        "--window-size=$Size",
-        "--timeout=30000",
-        "--run-all-compositor-stages-before-draw",
-        "--screenshot=$Output",
-        $Url
-    )
-    $argString = ($args | ForEach-Object {
-        if ($_ -match "\s") { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
-    }) -join " "
-    $process = Start-Process -FilePath $browser -ArgumentList $argString -PassThru -WindowStyle Hidden
-    $finished = Wait-Process -Id $process.Id -Timeout $ScreenshotTimeoutSeconds -ErrorAction SilentlyContinue
-    if (-not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force
-        throw "Browser screenshot timed out: $Url"
+    $lastFailure = $null
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $captureProfileDir = Join-Path $artifactDir ("chrome-profile-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Force $captureProfileDir | Out-Null
+        if (Test-Path $Output) {
+            Remove-Item -LiteralPath $Output -Force
+        }
+        try {
+            $args = @(
+                "--headless",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-gpu-compositing",
+                "--disable-software-rasterizer",
+                "--disable-features=VizDisplayCompositor",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--user-data-dir=$captureProfileDir",
+                "--window-size=$Size",
+                "--timeout=60000",
+                "--run-all-compositor-stages-before-draw",
+                "--screenshot=$Output",
+                $Url
+            )
+            $argString = ($args | ForEach-Object {
+                if ($_ -match "\s") { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+            }) -join " "
+            $process = Start-Process -FilePath $browser -ArgumentList $argString -PassThru -WindowStyle Hidden
+            $finished = Wait-Process -Id $process.Id -Timeout $ScreenshotTimeoutSeconds -ErrorAction SilentlyContinue
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force
+                throw "Browser screenshot timed out: $Url"
+            }
+            if ($process.ExitCode -ne 0) {
+                throw "Browser screenshot failed: $Url"
+            }
+            $item = Get-Item $Output
+            if ($item.Length -lt 1000) {
+                throw "Screenshot file is too small and may not have rendered: $Output"
+            }
+            return
+        } catch {
+            $lastFailure = $_
+            if ($attempt -lt 2) {
+                Start-Sleep -Seconds 2
+            }
+        } finally {
+            Remove-Item -LiteralPath $captureProfileDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
-    if ($process.ExitCode -ne 0) {
-        throw "Browser screenshot failed: $Url"
-    }
-    $item = Get-Item $Output
-    if ($item.Length -lt 1000) {
-        throw "Screenshot file is too small and may not have rendered: $Output"
-    }
+    throw $lastFailure
 }
 
 function Invoke-HttpJson {
@@ -257,8 +293,8 @@ try {
     Wait-AuditServer "$baseUrl/api/auth/session"
 
     Login-AuditSession $baseUrl
-    $taskId1 = Detect-ImageTask $baseUrl $sampleImages[0]
-    $taskId2 = Detect-ImageTask $baseUrl $sampleImages[1]
+    $taskId1 = Detect-ImageTask $BaseUrl $sampleImages[0]
+    $taskId2 = Detect-ImageTask $BaseUrl $sampleImages[1]
     $reportInfo = Generate-Report $baseUrl $taskId1
     Assert-ReportHtml $baseUrl ([string]$reportInfo.report_url)
 
@@ -280,6 +316,7 @@ try {
     $summary = [ordered]@{
         generated_at = (Get-Date).ToString("s")
         browser = $browser
+        python = $python
         base_url = $baseUrl
         task_ids = @($taskId1, $taskId2)
         report_url = [string]$reportInfo.report_url
