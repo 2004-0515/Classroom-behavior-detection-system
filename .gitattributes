@@ -2,6 +2,7 @@
 * text=auto
 /.gitattributes text eol=lf
 /.gitignore text eol=lf
+*.gitkeep text eol=lf
 
 # Keep source and docs on LF across platforms.
 *.py text eol=lf
