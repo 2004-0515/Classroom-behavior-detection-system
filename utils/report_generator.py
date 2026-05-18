@@ -695,6 +695,7 @@ class ReportGenerator:
     @staticmethod
     def _build_video_preview_card(task_info: Dict[str, Any], asset: Dict[str, Any]) -> str:
         links = []
+        empty_links_html = '<span class="preview-empty">当前没有可用视频资源链接</span>'
         if asset.get("result"):
             links.append(f'<a class="preview-link" href="{escape(str(asset["result"]), quote=True)}" target="_blank" rel="noopener">打开结果视频</a>')
         if asset.get("original"):
@@ -708,7 +709,7 @@ class ReportGenerator:
             f"<strong>{escape(ReportGenerator._get_task_type_name(task_info.get('task_type', 'video')))}</strong>"
             f"<p>文件：{escape(str(task_info.get('file_name', '未命名素材')))}</p>"
             f"<p>本次任务处理帧数 {escape(str(processed_frames))}，共识别 {escape(str(total_detections))} 个目标，处理时长 {duration:.1f} 秒。</p>"
-            f"<div class='preview-actions'>{''.join(links) or '<span class=\"preview-empty\">当前没有可用视频资源链接</span>'}</div>"
+            f"<div class='preview-actions'>{''.join(links) or empty_links_html}</div>"
             "</div>"
         )
 
