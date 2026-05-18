@@ -17,9 +17,10 @@
 
 ## 环境要求
 
-- Python 3.10+ 推荐
+- Python 3.10+；当前验收基线使用 Python 3.11
 - Windows 10/11
 - Node.js 18+；当前验收基线使用 Node 24
+- 仓库根目录提供 `.python-version` / `.node-version` 作为本地环境提示
 - `node` 用于前端脚本语法检查与 `static/app/services/*.test.js` 原生单测
 - 可选：本地摄像头设备
 - 可选：YOLO `.pt` 模型文件放入 `models/`

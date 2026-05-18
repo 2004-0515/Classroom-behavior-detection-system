@@ -1,6 +1,6 @@
 # 高标准审计报告
 
-最新验收基线：2026-05-18，git tag `acceptance-20260518`，commit `7e2fdb3`。产物时间以 `docs/_artifacts/verify-all-summary.json`、`docs/_artifacts/strict-system-audit.json` 与 `docs/_artifacts/real-demo-service-audit.json` 为准
+最新仓库级验收通过记录：2026-05-18，GitHub Actions `Windows Acceptance` run `26011829474`，commit `5642715`。最近一个人工封版 tag 仍为 `acceptance-20260518`（commit `7e2fdb3`）；当前 CI 基线固定 Python `3.11` / Node `24`，补充说明见 [acceptance-latest.md](./acceptance-latest.md)
 
 ## 审计目标
 
@@ -21,7 +21,7 @@
 - `scripts/strict_system_audit.py` 已通过，`docs/_artifacts/strict-system-audit.json` 当前为 `overall_status=passed`、`issues=[]`，覆盖 14 条真实浏览器流转，包含 1440 / 1366 / 390 三种视口。
 - `scripts/webcam_probe.py --live-seconds 2` 已复跑通过，本机 `0` 号摄像头可通过 `CAP_DSHOW` 打开并读取 `640x480` 画面，实时任务可启动、停止并保存原图/结果图；当前脚本默认写入隔离临时目录，不污染正式项目状态。
 - 批量上传“不支持文件格式时静默跳过”的风险已修复为明确返回 `400 unsupported_file`。
-- 最近一次一键总验收结果以 `docs/_artifacts/verify-all-summary.json` 为准；2026-05-18 这次验收为 `overall_status=OK`，当前验收链覆盖 `healthcheck`、`startup_smoke`、`frontend_service_tests`、`ui_smoke`、`interaction_smoke`、`regression_smoke`、`hardening_contracts`、`audit_readiness`、`strict_system_audit`、`browser_visual_audit`。
+- 最近一次 GitHub Actions `Windows Acceptance` 通过记录为 2026-05-18 的 run `26011829474`（commit `5642715`）；当前验收链覆盖 `healthcheck`、`startup_smoke`、`frontend_service_tests`、`ui_smoke`、`interaction_smoke`、`regression_smoke`、`hardening_contracts`、`audit_readiness`、`strict_system_audit`、`browser_visual_audit`。
 - 真实 `start_demo_session.bat` 入口的整链路演练结果已写入 `docs/_artifacts/real-demo-service-audit.json`，并补充了 `docs/_artifacts/real-demo-full-browser-summary.json` 与对应截图。
 - 答辩启动入口会默认从 `models/behavior.pt` 与 `models/head.pt` 启动，同时保留运行时模型切换与其余界面功能；交互烟测已验证答辩入口下仍可切换到 `behavior02.pt`。
 
