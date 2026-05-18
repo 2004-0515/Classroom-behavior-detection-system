@@ -112,7 +112,7 @@
 - `runtime_paths.py`
   - 统一解析 `python` / `node` 运行时
   - `python` 优先顺序：`CLASSROOM_PYTHON` -> 当前解释器 -> `ROOT/.venv/Scripts/python.exe` -> PATH 中的 `python`
-  - `node` 优先使用系统 PATH，找不到时回退到 bundled runtime
+  - `node` 优先使用系统 PATH；若 PATH 中的 `node` 缺失或 `--version` 无法正常执行，则回退到 bundled runtime
   - `resolve_playwright_node_paths()` 会优先使用 `static/app/node_modules`，找不到时回退到 bundled runtime 内的 `playwright` / `playwright-core` pnpm 目录
 
 - `runtime_paths_test.py`

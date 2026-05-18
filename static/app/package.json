@@ -4,6 +4,9 @@
     "frontend-service-tests": "node --test services/task-services.test.js",
     "strict-system-audit": "node scripts/strict-system-audit.cjs"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "playwright": "1.59.1"
   }

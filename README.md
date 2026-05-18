@@ -195,7 +195,7 @@ verify_classroom_app.bat
 说明：
 
 - `scripts/verify_all.py` 会优先使用系统 `node`
-- 若当前 shell 环境未配置 `node`，会自动回退到 bundled runtime 的 `node.exe`
+- 若 PATH 里的 `node` 缺失或存在但无法正常执行，会自动回退到 bundled runtime 的 `node.exe`
 - `verify_all.py` 当前会串联 `healthcheck`、`startup_smoke`、前端 service 单测、UI/交互/回归烟测、边界审计、严格系统级浏览器审计和浏览器视觉审计
 - `healthcheck.py` 与 `demo_preflight.py` 都会同时检查默认模型和当前用户配置里实际将加载的模型文件
 - 前端 service 单测当前覆盖 `task-results.js` 与 `browser-webcam-session.js`
