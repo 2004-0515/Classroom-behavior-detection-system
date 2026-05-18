@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 from isolated_env import create_and_apply_isolated_runtime
@@ -47,6 +48,14 @@ def emit_github_annotations(section: str, failures: list[str]) -> None:
     for item in failures:
         message = _escape_github_actions_value(item)
         print(f"::error file=scripts/healthcheck.py,line=1,title={title}::{message}")
+
+
+def run_check(label: str, callback):
+    try:
+        return callback()
+    except Exception as exc:
+        details = traceback.format_exc(limit=5).strip()
+        return [f"{label} 发生未捕获异常: {exc}; traceback: {details}"]
 
 
 def compile_python():
@@ -241,13 +250,13 @@ def print_section(title, failures):
 
 
 def main():
-    python_failures = compile_python()
-    package_failures = check_python_packages()
-    frontend_failures = check_frontend()
-    fs_failures = check_filesystem()
-    model_failures = check_model_assets()
-    route_failures = check_routes()
-    runtime_helper_failures = check_runtime_helpers()
+    python_failures = run_check("Python 编译", compile_python)
+    package_failures = run_check("Python 依赖", check_python_packages)
+    frontend_failures = run_check("前端语法", check_frontend)
+    fs_failures = run_check("目录检查", check_filesystem)
+    model_failures = run_check("模型检查", check_model_assets)
+    route_failures = run_check("关键路由", check_routes)
+    runtime_helper_failures = run_check("脚本运行时", check_runtime_helpers)
 
     print_section("Python 编译", python_failures)
     print_section("Python 依赖", package_failures)
