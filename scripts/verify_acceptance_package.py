@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = ROOT / "docs" / "_artifacts"
+DEFAULT_ACCEPTANCE_LABEL = "acceptance-20260518-r2"
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -21,7 +22,7 @@ def load_json(path: Path) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify an acceptance package zip against its manifest")
-    parser.add_argument("--label", default="acceptance-20260518")
+    parser.add_argument("--label", default=DEFAULT_ACCEPTANCE_LABEL)
     parser.add_argument("--zip-path", type=Path, default=None)
     parser.add_argument("--manifest-path", type=Path, default=None)
     parser.add_argument(

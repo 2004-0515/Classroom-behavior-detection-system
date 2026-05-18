@@ -18,7 +18,8 @@
 
 ## 相关说明
 
-- 最近一个人工封版 tag 仍为 `acceptance-20260518`，对应提交 `7e2fdb3`
+- 当前人工封版 tag 使用 `acceptance-20260518-r2`
+- 当前交付摘要见 [acceptance-handoff-20260518-r2.md](./acceptance-handoff-20260518-r2.md)
 - 历史交付摘要保留在 [acceptance-handoff-20260518.md](./acceptance-handoff-20260518.md)
 - 通用审计结论与复核命令见 [high-standard-audit-report.md](./high-standard-audit-report.md)
 

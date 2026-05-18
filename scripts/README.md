@@ -87,11 +87,11 @@
 
 13. `build_acceptance_package.py`
     - 汇总 `docs/` 下的答辩说明和 `docs/_artifacts/` 下的关键验收产物
-    - 输出 `docs/_artifacts/acceptance-20260518-package.zip` 与对应 `manifest.json`
+    - 输出 `docs/_artifacts/acceptance-20260518-r2-package.zip` 与对应 `manifest.json`
     - 会自动纳入严格浏览器审计 run dir、浏览器截图、真实答辩入口彩排摘要和批量 ZIP 等证据
 
 14. `verify_acceptance_package.py`
-    - 校验 `acceptance-20260518-package.zip` 与 sidecar manifest 是否一致
+    - 校验 `acceptance-20260518-r2-package.zip` 与 sidecar manifest 是否一致
     - 默认逐项验证 zip 内文件路径、大小和 `sha256`
     - `--check-live-files` 可额外校验当前工作区中的源文件仍与 manifest 一致
     - 若想从仓库根目录直接运行，可使用 `verify_acceptance_package.bat`

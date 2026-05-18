@@ -114,8 +114,8 @@ build_acceptance_package.bat
 
 输出：
 
-- `docs/_artifacts/acceptance-20260518-package.zip`
-- `docs/_artifacts/acceptance-20260518-package.manifest.json`
+- `docs/_artifacts/acceptance-20260518-r2-package.zip`
+- `docs/_artifacts/acceptance-20260518-r2-package.manifest.json`
 
 如需在交付前独立验包，可执行：
 

@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = ROOT / "docs"
 ARTIFACT_DIR = DOCS_DIR / "_artifacts"
+DEFAULT_ACCEPTANCE_LABEL = "acceptance-20260518-r2"
+DEFAULT_ACCEPTANCE_TAG = DEFAULT_ACCEPTANCE_LABEL
 
 
 @dataclass(frozen=True)
@@ -37,9 +39,14 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def collect_base_files() -> tuple[list[Path], list[Path]]:
+def handoff_doc_for_label(label: str) -> Path:
+    suffix = label.removeprefix("acceptance-")
+    return DOCS_DIR / f"acceptance-handoff-{suffix}.md"
+
+
+def collect_base_files(*, handoff_doc: Path) -> tuple[list[Path], list[Path]]:
     required = [
-        DOCS_DIR / "acceptance-handoff-20260518.md",
+        handoff_doc,
         DOCS_DIR / "high-standard-audit-report.md",
         DOCS_DIR / "demo-runbook.md",
         DOCS_DIR / "demo-readiness-checklist.md",
@@ -98,8 +105,8 @@ def extend_from_real_demo_browser(summary_path: Path, required: list[Path], opti
             optional.append(Path(value))
 
 
-def resolve_files() -> tuple[list[Path], list[str]]:
-    required, optional = collect_base_files()
+def resolve_files(*, label: str) -> tuple[list[Path], list[str]]:
+    required, optional = collect_base_files(handoff_doc=handoff_doc_for_label(label))
     extend_from_browser_visual(ARTIFACT_DIR / "browser-visual-audit.json", required, optional)
     extend_from_strict_audit(ARTIFACT_DIR / "strict-system-audit.json", required, optional)
     extend_from_real_demo_service(ARTIFACT_DIR / "real-demo-service-audit.json", required, optional)
@@ -145,6 +152,21 @@ def describe_git_head() -> dict:
     return data
 
 
+def resolve_baseline_commit(*, acceptance_tag: str, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    tag_result = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--short", f"{acceptance_tag}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if tag_result.returncode == 0:
+        return tag_result.stdout.strip()
+    return describe_git_head()["head_short"]
+
+
 def build_manifest(*, label: str, acceptance_tag: str, baseline_commit: str, files: list[Path], missing_optional: list[str], paths: PackagePaths) -> dict:
     git_state = describe_git_head()
     package_files = []
@@ -182,9 +204,9 @@ def build_package(paths: PackagePaths, files: list[Path]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bundle acceptance docs and audit artifacts into a single zip package")
-    parser.add_argument("--label", default="acceptance-20260518", help="package label used in output filenames")
-    parser.add_argument("--acceptance-tag", default="acceptance-20260518")
-    parser.add_argument("--baseline-commit", default="7e2fdb3")
+    parser.add_argument("--label", default=DEFAULT_ACCEPTANCE_LABEL, help="package label used in output filenames")
+    parser.add_argument("--acceptance-tag", default=DEFAULT_ACCEPTANCE_TAG)
+    parser.add_argument("--baseline-commit", default=None)
     return parser.parse_args()
 
 
@@ -194,12 +216,12 @@ def main() -> int:
         zip_path=ARTIFACT_DIR / f"{args.label}-package.zip",
         manifest_path=ARTIFACT_DIR / f"{args.label}-package.manifest.json",
     )
-    files, missing_optional = resolve_files()
+    files, missing_optional = resolve_files(label=args.label)
     build_package(paths, files)
     manifest = build_manifest(
         label=args.label,
         acceptance_tag=args.acceptance_tag,
-        baseline_commit=args.baseline_commit,
+        baseline_commit=resolve_baseline_commit(acceptance_tag=args.acceptance_tag, explicit=args.baseline_commit),
         files=files,
         missing_optional=missing_optional,
         paths=paths,

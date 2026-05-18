@@ -63,7 +63,7 @@ start_demo_session.bat
 
 建议先跑一次总验收：
 
-- 当前已推送验收基线：git tag `acceptance-20260518`，commit `7e2fdb3`
+- 当前已推送验收基线：git tag `acceptance-20260518-r2`
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\verify_all.py

@@ -1,6 +1,6 @@
 # 高标准审计报告
 
-当前仓库级验收入口是 GitHub Actions `Windows Acceptance`。此文档不固定最新 run id，因为任何新的 push 都会刷新该记录；如需查看当前状态，以 `main` 分支上的最新 workflow 记录为准。最近一个人工封版 tag 仍为 `acceptance-20260518`（commit `7e2fdb3`）；当前 CI 基线固定 Python `3.11` / Node `24`，补充说明见 [acceptance-latest.md](./acceptance-latest.md)
+当前仓库级验收入口是 GitHub Actions `Windows Acceptance`。此文档不固定最新 run id，因为任何新的 push 都会刷新该记录；如需查看当前状态，以 `main` 分支上的最新 workflow 记录为准。当前人工封版 tag 使用 `acceptance-20260518-r2`，历史封版 `acceptance-20260518`（commit `7e2fdb3`）继续保留；当前 CI 基线固定 Python `3.11` / Node `24`，补充说明见 [acceptance-latest.md](./acceptance-latest.md)
 
 ## 审计目标
 
