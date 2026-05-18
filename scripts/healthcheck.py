@@ -12,15 +12,9 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from isolated_env import create_and_apply_isolated_runtime
-
-
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from classroom_app.core.errors import ModelError
-from classroom_app.core.model_integrity import validate_model_file, verify_model_manifest
 from runtime_paths import NODE_FALLBACK, resolve_node, resolve_python
 
 
@@ -161,6 +155,9 @@ def _collect_required_models():
 
 
 def check_model_assets():
+    from classroom_app.core.errors import ModelError
+    from classroom_app.core.model_integrity import validate_model_file, verify_model_manifest
+
     failures: list[str] = []
     try:
         failures.extend(verify_model_manifest(MODEL_ROOT))
@@ -185,6 +182,8 @@ def check_model_assets():
 
 
 def check_routes():
+    from isolated_env import create_and_apply_isolated_runtime
+
     os.environ.setdefault("ADMIN_USERNAME", "healthcheck_admin")
     os.environ.setdefault("ADMIN_PASSWORD", "healthcheck_pass_123")
 
