@@ -148,17 +148,34 @@ function createFlowState(audit, flow, viewport, flowDir, allowHttpFailure) {
     };
 }
 
+function isIgnorableStreamingPath(pathname) {
+    return pathname === '/api/streams/webcam/feed'
+        || pathname === '/api/streams/webcam/diagnostics'
+        || /^\/api\/streams\/video\/[^/]+\/feed$/.test(pathname);
+}
+
 function shouldIgnoreRequestFailure(flowState, request) {
     const failure = request.failure();
     const errorText = failure ? failure.errorText : '';
-    if (errorText !== 'net::ERR_ABORTED' || request.method() !== 'GET') {
+    if (request.method() !== 'GET') {
         return false;
     }
     const pathname = new URL(request.url()).pathname;
-    return pathname.startsWith('/outputs/')
-        || pathname === '/api/streams/webcam/feed'
-        || pathname === '/api/streams/webcam/diagnostics'
-        || /^\/api\/streams\/video\/[^/]+\/feed$/.test(pathname);
+    if (isIgnorableStreamingPath(pathname)) {
+        return true;
+    }
+    if (errorText !== 'net::ERR_ABORTED') {
+        return false;
+    }
+    return pathname.startsWith('/outputs/');
+}
+
+function shouldIgnoreResponseFailure(flowState, response) {
+    const request = response.request();
+    if (request.method() !== 'GET') {
+        return false;
+    }
+    return isIgnorableStreamingPath(new URL(response.url()).pathname);
 }
 
 function attachDiagnostics(page, flowState) {
@@ -193,6 +210,9 @@ function attachDiagnostics(page, flowState) {
             return;
         }
         if (response.status() < 400) {
+            return;
+        }
+        if (shouldIgnoreResponseFailure(flowState, response)) {
             return;
         }
         if (typeof flowState.allowHttpFailure === 'function' && flowState.allowHttpFailure(response)) {
