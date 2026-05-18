@@ -36,6 +36,19 @@ PYTHON_PACKAGE_CHECKS = [
 MODEL_ROOT = ROOT / "models"
 
 
+def _escape_github_actions_value(value: object) -> str:
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def emit_github_annotations(section: str, failures: list[str]) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    title = _escape_github_actions_value(f"Healthcheck {section}")
+    for item in failures:
+        message = _escape_github_actions_value(item)
+        print(f"::error file=scripts/healthcheck.py,line=1,title={title}::{message}")
+
+
 def compile_python():
     failures = []
     for path in ROOT.rglob("*.py"):
@@ -224,6 +237,7 @@ def print_section(title, failures):
         return
     for item in failures:
         print(f"- {item}")
+    emit_github_annotations(title, failures)
 
 
 def main():
