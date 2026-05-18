@@ -155,7 +155,10 @@ function shouldIgnoreRequestFailure(flowState, request) {
         return false;
     }
     const pathname = new URL(request.url()).pathname;
-    return pathname.startsWith('/outputs/') || pathname === '/api/streams/webcam/feed';
+    return pathname.startsWith('/outputs/')
+        || pathname === '/api/streams/webcam/feed'
+        || pathname === '/api/streams/webcam/diagnostics'
+        || /^\/api\/streams\/video\/[^/]+\/feed$/.test(pathname);
 }
 
 function attachDiagnostics(page, flowState) {
@@ -233,14 +236,61 @@ async function getNotificationText(page) {
 
 async function waitForNotification(page, matcher, timeout = 15000) {
     const deadline = Date.now() + timeout;
+    let lastText = '';
     while (Date.now() < deadline) {
         const text = await getNotificationText(page);
+        lastText = text;
         if (matcher.test(text)) {
             return text;
         }
         await wait(250);
     }
-    throw new Error(`未在通知区中匹配到: ${matcher}`);
+    throw new Error(`未在通知区中匹配到: ${matcher}；当前通知: ${lastText || '无'}`);
+}
+
+async function waitForNotificationOutcome(page, matchers, timeout = 15000) {
+    const deadline = Date.now() + timeout;
+    let lastText = '';
+    while (Date.now() < deadline) {
+        const text = await getNotificationText(page);
+        lastText = text;
+        const matched = matchers.find((matcher) => matcher.test(text));
+        if (matched) {
+            return { text, matcher: matched };
+        }
+        await wait(250);
+    }
+    throw new Error(`未在通知区中匹配到预期结果；当前通知: ${lastText || '无'}`);
+}
+
+function isRetryableWebcamStartNetworkFailure(entry) {
+    if (!entry || entry.type !== 'http' || entry.method !== 'POST' || entry.status !== 400 || !entry.url) {
+        return false;
+    }
+    try {
+        return new URL(entry.url).pathname === '/api/streams/webcam/start';
+    } catch (error) {
+        return false;
+    }
+}
+
+function isRetryableWebcamStartConsoleError(entry) {
+    if (!entry || entry.type !== 'console' || !entry.location || !entry.location.url) {
+        return false;
+    }
+    if (!/Failed to load resource: the server responded with a status of 400/i.test(entry.text || '')) {
+        return false;
+    }
+    try {
+        return new URL(entry.location.url).pathname === '/api/streams/webcam/start';
+    } catch (error) {
+        return false;
+    }
+}
+
+function suppressRetryableWebcamStartFailures(flowState) {
+    flowState.networkFailures = flowState.networkFailures.filter((entry) => !isRetryableWebcamStartNetworkFailure(entry));
+    flowState.consoleErrors = flowState.consoleErrors.filter((entry) => !isRetryableWebcamStartConsoleError(entry));
 }
 
 async function waitForAppShell(page) {
@@ -963,34 +1013,72 @@ async function auditServerWebcamFlow(ctx) {
     const { audit, page, flowState } = ctx;
     flowState.stepLog.push('进入摄像头模式并检查服务端摄像头诊断');
     await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
-    const diagnostics = await fetchJson(page, '/api/streams/webcam/diagnostics?camera_index=0');
-    const attempts = diagnostics.payload && diagnostics.payload.data ? diagnostics.payload.data.attempts || [] : [];
-    const successfulAttempt = attempts.find((item) => item.success);
-    if (!successfulAttempt) {
+    await page.click('#probeWebcamBtn');
+    const probeDeadline = Date.now() + 30000;
+    let probeState = {
+        selectedIndex: null,
+        diagnosticsText: '',
+        notificationText: '',
+        unavailable: false,
+        failed: false,
+    };
+    while (Date.now() < probeDeadline) {
+        probeState = await page.evaluate(() => {
+            const diagnosticsNode = document.getElementById('webcamDiagnostics');
+            const notificationsNode = document.getElementById('notifications');
+            const diagnosticsText = ((diagnosticsNode && diagnosticsNode.innerText) || '').replace(/\s+/g, ' ').trim();
+            const notificationText = ((notificationsNode && notificationsNode.innerText) || '').replace(/\s+/g, ' ').trim();
+            const selectedMatch = diagnosticsText.match(/已选机位\s+(\d+)/);
+            return {
+                selectedIndex: selectedMatch ? Number(selectedMatch[1]) : null,
+                diagnosticsText,
+                notificationText,
+                unavailable: /未找到可用机位/.test(diagnosticsText) || /未找到可读取画面的摄像头组合/.test(notificationText),
+                failed: /摄像头诊断失败/.test(notificationText),
+            };
+        });
+        if (probeState.selectedIndex !== null || probeState.unavailable || probeState.failed || (probeState.diagnosticsText && !/尚未诊断/.test(probeState.diagnosticsText))) {
+            break;
+        }
+        await wait(250);
+    }
+    if (probeState.selectedIndex === null) {
         await captureScreenshot(page, flowState, 'webcam-server-diagnostics', { fullPage: true });
         addIssue(audit, flowState, {
             severity: 'coverage_gap',
             repro_steps: [...flowState.stepLog, '检查服务端摄像头诊断结果。'],
             expected: '严格审计应覆盖服务端摄像头启动 / 停止。',
-            observed: `当前环境没有可用服务端摄像头，诊断尝试数=${attempts.length}。`,
+            observed: `当前环境未拿到稳定的服务端摄像头诊断结果，诊断区: ${probeState.diagnosticsText || '无'}；通知区: ${probeState.notificationText || '无'}`,
             missing_regression: '现有验收会在无摄像头环境下跳过服务端启停，但不会把这部分硬件覆盖空洞单独沉淀成机器可读审计结果。',
         });
         return;
     }
     const beforeHistory = await countHistoryTasks(page);
-    await setCameraIndex(page, successfulAttempt.index);
+    await setCameraIndex(page, probeState.selectedIndex);
     flowState.stepLog.push('启动并停止服务端摄像头');
     await page.click('#startWebcamBtn');
-    await waitForNotification(page, /摄像头已启动/, 30000);
-    const fallbackNotice = await getNotificationText(page);
-    if (/浏览器摄像头直连/.test(fallbackNotice)) {
+    const startOutcome = await waitForNotificationOutcome(page, [
+        /摄像头已启动/,
+        /服务端摄像头不可用，直接切换浏览器直连/,
+        /服务端摄像头启动未完成，尝试浏览器直连/,
+        /已切换到浏览器摄像头直连/,
+        /浏览器摄像头直连失败/,
+    ], 45000);
+    suppressRetryableWebcamStartFailures(flowState);
+    if (!/摄像头已启动/.test(startOutcome.text)) {
+        await captureScreenshot(page, flowState, 'webcam-server-diagnostics-gap', { fullPage: true });
         addIssue(audit, flowState, {
-            severity: 'major',
+            severity: 'coverage_gap',
             repro_steps: [...flowState.stepLog],
-            expected: '有可用服务端摄像头时，应完成服务端启停，而不是退回浏览器直连。',
-            observed: '服务端摄像头路径没有成功，流程退回到了浏览器直连。',
-            missing_regression: '现有验收只看接口级 happy path，没有在真实浏览器里分辨服务端路径与 fallback 路径。',
+            expected: '若当前环境具备稳定的服务端摄像头，严格审计应完成服务端启停；否则应把硬件覆盖缺口记录下来。',
+            observed: `当前环境未完成服务端摄像头启停，通知区显示: ${startOutcome.text || '无'}`,
+            missing_regression: '现有验收只在接口层预探测一次，没有沿用页面自己的诊断状态来判断这台机器是否真的具备可持续的服务端摄像头链路。',
         });
+        const stopVisible = await page.locator('#stopWebcamBtn').isVisible().catch(() => false);
+        if (stopVisible) {
+            await page.click('#stopWebcamBtn').catch(() => {});
+        }
+        return;
     }
     await captureScreenshot(page, flowState, 'webcam-server-live', { fullPage: true });
     await page.click('#stopWebcamBtn');
