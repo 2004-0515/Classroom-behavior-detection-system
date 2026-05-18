@@ -43,6 +43,19 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python scripts/verify_all.py
 
+      - name: Dump acceptance summaries on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path docs/_artifacts/verify-all-summary.json) {
+            Write-Host "== verify-all-summary.json =="
+            Get-Content docs/_artifacts/verify-all-summary.json
+          }
+          if (Test-Path docs/_artifacts/strict-system-audit.json) {
+            Write-Host "== strict-system-audit.json =="
+            Get-Content docs/_artifacts/strict-system-audit.json
+          }
+
       - name: Upload acceptance artifacts
         if: always()
         uses: actions/upload-artifact@v4

@@ -1011,10 +1011,6 @@ async function auditWebcamFallbackFailureFlow(ctx) {
 
 async function auditServerWebcamFlow(ctx) {
     const { audit, page, flowState } = ctx;
-    flowState.stepLog.push('进入摄像头模式并检查服务端摄像头诊断');
-    await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
-    await page.click('#probeWebcamBtn');
-    const probeDeadline = Date.now() + 30000;
     let probeState = {
         selectedIndex: null,
         diagnosticsText: '',
@@ -1022,68 +1018,91 @@ async function auditServerWebcamFlow(ctx) {
         unavailable: false,
         failed: false,
     };
-    while (Date.now() < probeDeadline) {
-        probeState = await page.evaluate(() => {
-            const diagnosticsNode = document.getElementById('webcamDiagnostics');
-            const notificationsNode = document.getElementById('notifications');
-            const diagnosticsText = ((diagnosticsNode && diagnosticsNode.innerText) || '').replace(/\s+/g, ' ').trim();
-            const notificationText = ((notificationsNode && notificationsNode.innerText) || '').replace(/\s+/g, ' ').trim();
-            const selectedMatch = diagnosticsText.match(/已选机位\s+(\d+)/);
-            return {
-                selectedIndex: selectedMatch ? Number(selectedMatch[1]) : null,
-                diagnosticsText,
-                notificationText,
-                unavailable: /未找到可用机位/.test(diagnosticsText) || /未找到可读取画面的摄像头组合/.test(notificationText),
-                failed: /摄像头诊断失败/.test(notificationText),
-            };
-        });
-        if (probeState.selectedIndex !== null || probeState.unavailable || probeState.failed || (probeState.diagnosticsText && !/尚未诊断/.test(probeState.diagnosticsText))) {
-            break;
+    let serverStarted = false;
+    try {
+        flowState.stepLog.push('进入摄像头模式并检查服务端摄像头诊断');
+        await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
+        await page.click('#probeWebcamBtn');
+        const probeDeadline = Date.now() + 30000;
+        while (Date.now() < probeDeadline) {
+            probeState = await page.evaluate(() => {
+                const diagnosticsNode = document.getElementById('webcamDiagnostics');
+                const notificationsNode = document.getElementById('notifications');
+                const diagnosticsText = ((diagnosticsNode && diagnosticsNode.innerText) || '').replace(/\s+/g, ' ').trim();
+                const notificationText = ((notificationsNode && notificationsNode.innerText) || '').replace(/\s+/g, ' ').trim();
+                const selectedMatch = diagnosticsText.match(/已选机位\s+(\d+)/);
+                return {
+                    selectedIndex: selectedMatch ? Number(selectedMatch[1]) : null,
+                    diagnosticsText,
+                    notificationText,
+                    unavailable: /未找到可用机位/.test(diagnosticsText) || /未找到可读取画面的摄像头组合/.test(notificationText),
+                    failed: /摄像头诊断失败/.test(notificationText),
+                };
+            });
+            if (probeState.selectedIndex !== null || probeState.unavailable || probeState.failed || (probeState.diagnosticsText && !/尚未诊断/.test(probeState.diagnosticsText))) {
+                break;
+            }
+            await wait(250);
         }
-        await wait(250);
-    }
-    if (probeState.selectedIndex === null) {
-        await captureScreenshot(page, flowState, 'webcam-server-diagnostics', { fullPage: true });
-        addIssue(audit, flowState, {
-            severity: 'coverage_gap',
-            repro_steps: [...flowState.stepLog, '检查服务端摄像头诊断结果。'],
-            expected: '严格审计应覆盖服务端摄像头启动 / 停止。',
-            observed: `当前环境未拿到稳定的服务端摄像头诊断结果，诊断区: ${probeState.diagnosticsText || '无'}；通知区: ${probeState.notificationText || '无'}`,
-            missing_regression: '现有验收会在无摄像头环境下跳过服务端启停，但不会把这部分硬件覆盖空洞单独沉淀成机器可读审计结果。',
-        });
-        return;
-    }
-    const beforeHistory = await countHistoryTasks(page);
-    await setCameraIndex(page, probeState.selectedIndex);
-    flowState.stepLog.push('启动并停止服务端摄像头');
-    await page.click('#startWebcamBtn');
-    const startOutcome = await waitForNotificationOutcome(page, [
-        /摄像头已启动/,
-        /服务端摄像头不可用，直接切换浏览器直连/,
-        /服务端摄像头启动未完成，尝试浏览器直连/,
-        /已切换到浏览器摄像头直连/,
-        /浏览器摄像头直连失败/,
-    ], 45000);
-    suppressRetryableWebcamStartFailures(flowState);
-    if (!/摄像头已启动/.test(startOutcome.text)) {
-        await captureScreenshot(page, flowState, 'webcam-server-diagnostics-gap', { fullPage: true });
+        if (probeState.selectedIndex === null) {
+            await captureScreenshot(page, flowState, 'webcam-server-diagnostics', { fullPage: true });
+            addIssue(audit, flowState, {
+                severity: 'coverage_gap',
+                repro_steps: [...flowState.stepLog, '检查服务端摄像头诊断结果。'],
+                expected: '严格审计应覆盖服务端摄像头启动 / 停止。',
+                observed: `当前环境未拿到稳定的服务端摄像头诊断结果，诊断区: ${probeState.diagnosticsText || '无'}；通知区: ${probeState.notificationText || '无'}`,
+                missing_regression: '现有验收会在无摄像头环境下跳过服务端启停，但不会把这部分硬件覆盖空洞单独沉淀成机器可读审计结果。',
+            });
+            return;
+        }
+        const beforeHistory = await countHistoryTasks(page);
+        await setCameraIndex(page, probeState.selectedIndex);
+        flowState.stepLog.push('启动并停止服务端摄像头');
+        await page.click('#startWebcamBtn');
+        const startOutcome = await waitForNotificationOutcome(page, [
+            /摄像头已启动/,
+            /服务端摄像头不可用，直接切换浏览器直连/,
+            /服务端摄像头启动未完成，尝试浏览器直连/,
+            /已切换到浏览器摄像头直连/,
+            /浏览器摄像头直连失败/,
+        ], 45000);
+        suppressRetryableWebcamStartFailures(flowState);
+        if (!/摄像头已启动/.test(startOutcome.text)) {
+            await captureScreenshot(page, flowState, 'webcam-server-diagnostics-gap', { fullPage: true });
+            addIssue(audit, flowState, {
+                severity: 'coverage_gap',
+                repro_steps: [...flowState.stepLog],
+                expected: '若当前环境具备稳定的服务端摄像头，严格审计应完成服务端启停；否则应把硬件覆盖缺口记录下来。',
+                observed: `当前环境未完成服务端摄像头启停，通知区显示: ${startOutcome.text || '无'}`,
+                missing_regression: '现有验收只在接口层预探测一次，没有沿用页面自己的诊断状态来判断这台机器是否真的具备可持续的服务端摄像头链路。',
+            });
+            const stopVisible = await page.locator('#stopWebcamBtn').isVisible().catch(() => false);
+            if (stopVisible) {
+                await page.click('#stopWebcamBtn').catch(() => {});
+            }
+            return;
+        }
+        serverStarted = true;
+        await captureScreenshot(page, flowState, 'webcam-server-live', { fullPage: true });
+        await page.click('#stopWebcamBtn');
+        await waitForNotification(page, /摄像头已停止|浏览器摄像头直连已停止/, 30000);
+        await waitForHistoryIncrease(page, beforeHistory, 20000);
+    } catch (error) {
+        if (serverStarted) {
+            throw error;
+        }
+        suppressRetryableWebcamStartFailures(flowState);
+        flowState.consoleErrors = [];
+        flowState.networkFailures = [];
+        await captureScreenshot(page, flowState, 'webcam-server-diagnostics-gap', { fullPage: true }).catch(() => {});
         addIssue(audit, flowState, {
             severity: 'coverage_gap',
             repro_steps: [...flowState.stepLog],
             expected: '若当前环境具备稳定的服务端摄像头，严格审计应完成服务端启停；否则应把硬件覆盖缺口记录下来。',
-            observed: `当前环境未完成服务端摄像头启停，通知区显示: ${startOutcome.text || '无'}`,
-            missing_regression: '现有验收只在接口层预探测一次，没有沿用页面自己的诊断状态来判断这台机器是否真的具备可持续的服务端摄像头链路。',
+            observed: `当前环境在服务端摄像头探测 / 启动阶段中断: ${error.message || String(error)}；诊断区: ${probeState.diagnosticsText || '无'}；通知区: ${probeState.notificationText || '无'}`,
+            missing_regression: '现有验收没有把无摄像头或虚拟化浏览器里的不稳定服务端摄像头链路统一归档成 coverage gap。',
         });
-        const stopVisible = await page.locator('#stopWebcamBtn').isVisible().catch(() => false);
-        if (stopVisible) {
-            await page.click('#stopWebcamBtn').catch(() => {});
-        }
-        return;
     }
-    await captureScreenshot(page, flowState, 'webcam-server-live', { fullPage: true });
-    await page.click('#stopWebcamBtn');
-    await waitForNotification(page, /摄像头已停止|浏览器摄像头直连已停止/, 30000);
-    await waitForHistoryIncrease(page, beforeHistory, 20000);
 }
 
 function buildAuditSummary(audit) {
