@@ -50,10 +50,23 @@ jobs:
           if (Test-Path docs/_artifacts/verify-all-summary.json) {
             Write-Host "== verify-all-summary.json =="
             Get-Content docs/_artifacts/verify-all-summary.json
+            $verifySummary = Get-Content docs/_artifacts/verify-all-summary.json -Raw | ConvertFrom-Json
+            $failedChecks = @($verifySummary.checks | Where-Object { $_.status -ne 'OK' } | ForEach-Object { "$($_.name) ($($_.duration_seconds)s)" })
+            if ($failedChecks.Count -gt 0) {
+              Write-Output "::error file=scripts/verify_all.py,line=1,title=Acceptance failed::$($failedChecks -join ', ')"
+            }
           }
           if (Test-Path docs/_artifacts/strict-system-audit.json) {
             Write-Host "== strict-system-audit.json =="
             Get-Content docs/_artifacts/strict-system-audit.json
+            $strictAudit = Get-Content docs/_artifacts/strict-system-audit.json -Raw | ConvertFrom-Json
+            if ($strictAudit.overall_status -eq 'failed' -and $strictAudit.issues.Count -gt 0) {
+              $issue = $strictAudit.issues[0]
+              Write-Output "::error file=static/app/scripts/strict-system-audit.cjs,line=1,title=Strict audit failure::$($issue.flow) [$($issue.severity)] $($issue.observed)"
+            } elseif ($strictAudit.overall_status -eq 'passed_with_coverage_gap' -and $strictAudit.issues.Count -gt 0) {
+              $issue = $strictAudit.issues[0]
+              Write-Output "::notice file=static/app/scripts/strict-system-audit.cjs,line=1,title=Strict audit coverage gap::$($issue.flow) [$($issue.severity)] $($issue.observed)"
+            }
           }
 
       - name: Upload acceptance artifacts
