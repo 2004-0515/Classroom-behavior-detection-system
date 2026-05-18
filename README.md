@@ -19,6 +19,7 @@
 
 - Python 3.10+ 推荐
 - Windows 10/11
+- Node.js 18+；当前验收基线使用 Node 24
 - `node` 用于前端脚本语法检查与 `static/app/services/*.test.js` 原生单测
 - 可选：本地摄像头设备
 - 可选：YOLO `.pt` 模型文件放入 `models/`
