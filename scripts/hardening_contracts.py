@@ -175,6 +175,58 @@ def run_route_contracts() -> dict:
             finally:
                 services.tasks.db.create_task = original_create_task
 
+            original_recent_payloads = services.task_payloads.build_recent_payloads
+            try:
+                services.task_payloads.build_recent_payloads = lambda *args, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("recent tasks exploded")
+                )
+                results["recent_tasks_internal_failure"] = assert_error(
+                    client.get("/api/tasks/recent"),
+                    500,
+                    "recent_tasks_failed",
+                    "recent tasks internal failures return JSON",
+                )
+            finally:
+                services.task_payloads.build_recent_payloads = original_recent_payloads
+
+            original_build_task_payload = services.task_payloads.build_task_payload
+            try:
+                services.task_payloads.build_task_payload = lambda *args, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("task payload exploded")
+                )
+                results["task_report_internal_failure"] = assert_error(
+                    client.get("/api/tasks/broken-task/report"),
+                    500,
+                    "task_report_failed",
+                    "task report internal failures return JSON",
+                )
+            finally:
+                services.task_payloads.build_task_payload = original_build_task_payload
+
+            original_model_info = services.models.get_current_model_info
+            try:
+                services.models.get_current_model_info = lambda: (_ for _ in ()).throw(RuntimeError("model info exploded"))
+                results["model_info_internal_failure"] = assert_error(
+                    client.get("/api/models/info"),
+                    500,
+                    "model_info_failed",
+                    "model info internal failures return JSON",
+                )
+            finally:
+                services.models.get_current_model_info = original_model_info
+
+            original_load_model = services.models.load_model
+            try:
+                services.models.load_model = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("model load exploded"))
+                results["model_load_internal_failure"] = assert_error(
+                    client.post("/api/models/load", json={"type": "student", "model": "behavior.pt"}),
+                    500,
+                    "model_load_request_failed",
+                    "model load internal failures return JSON",
+                )
+            finally:
+                services.models.load_model = original_load_model
+
             browser_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(browser_start, 200, "browser webcam start for report_not_ready")
             processing_task_id = browser_start.get_json()["data"]["task_id"]
