@@ -129,6 +129,7 @@ def run_upload_and_api_edges() -> list[dict]:
         app = create_app()
         with app.test_client() as client:
             login(client)
+            services = app.extensions["services"]
             checks = [
                 assert_error(client.post("/api/detect/image", data={}), 400, "missing_file", "image upload requires file"),
                 assert_error(
@@ -142,6 +143,18 @@ def run_upload_and_api_edges() -> list[dict]:
                     400,
                     "unsupported_file",
                     "batch upload rejects unsupported extension",
+                ),
+                assert_error(
+                    client.post("/api/detect/image", data={"file": (io.BytesIO(b"not really a jpg"), "broken.jpg")}),
+                    400,
+                    "image_read_failed",
+                    "image upload rejects unreadable image content",
+                ),
+                assert_error(
+                    client.post("/api/detect/batch", data={"files": [(io.BytesIO(b"not really a jpg"), "broken.jpg")]}),
+                    400,
+                    "image_read_failed",
+                    "batch upload rejects unreadable image content",
                 ),
                 assert_error(
                     client.post("/api/detect/frame", json={}),
@@ -180,6 +193,35 @@ def run_upload_and_api_edges() -> list[dict]:
                     "model switch rejects unapproved manifest entries",
                 ),
             ]
+            recent_tasks = services.task_payloads.build_recent_payloads(5)
+            failed_image_task = next(
+                (
+                    item
+                    for item in recent_tasks
+                    if item.get("task_type") == "image" and item.get("file_name") == "broken.jpg"
+                ),
+                None,
+            )
+            if not failed_image_task or failed_image_task.get("status") != "failed":
+                raise AssertionError("unreadable image upload should persist a failed image task")
+            if int(failed_image_task.get("processed_frames") or 0) != 0 or int(failed_image_task.get("total_frames") or 0) != 1:
+                raise AssertionError("failed unreadable image task should preserve 0/1 frame progress")
+            if int(failed_image_task.get("total_detections") or 0) != 0:
+                raise AssertionError("failed unreadable image task should not report detections")
+            failed_batch_task = next(
+                (
+                    item
+                    for item in recent_tasks
+                    if item.get("task_type") == "batch" and item.get("file_name") == "1 images"
+                ),
+                None,
+            )
+            if not failed_batch_task or failed_batch_task.get("status") != "failed":
+                raise AssertionError("unreadable batch upload should persist a failed batch task")
+            if int(failed_batch_task.get("processed_frames") or 0) != 0 or int(failed_batch_task.get("total_frames") or 0) != 1:
+                raise AssertionError("failed unreadable batch task should preserve 0/1 frame progress")
+            if int(failed_batch_task.get("total_detections") or 0) != 0:
+                raise AssertionError("failed unreadable batch task should not report detections")
             diagnostics = client.get("/api/streams/webcam/diagnostics?camera_index=99")
             assert_status(diagnostics, 200, "webcam diagnostics endpoint")
             payload = diagnostics.get_json()["data"]
