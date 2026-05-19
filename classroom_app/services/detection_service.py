@@ -53,36 +53,50 @@ class DetectionService:
         storage.save(input_path)
         self.task_service.create_task(task_id, "image", filename)
         self.task_service.save_task_asset(task_id, "original", Path(input_path).name, media_type="image", file_name=filename)
+        try:
+            image = cv2.imread(input_path)
+            if image is None:
+                raise MediaError("无法读取图片", code="image_read_failed")
 
-        image = cv2.imread(input_path)
-        if image is None:
-            raise MediaError("无法读取图片", code="image_read_failed")
+            self._update_detector_params(confidence, iou)
+            detector = self.model_service.get_detector()
+            results = detector.detect_image(image)
 
-        self._update_detector_params(confidence, iou)
-        detector = self.model_service.get_detector()
-        results = detector.detect_image(image)
+            output_filename = f"result_{task_id}_{filename}"
+            output_path = os.path.join(Config.OUTPUT_FOLDER, output_filename)
+            cv2.imwrite(output_path, results["annotated_image"])
+            self.task_service.save_task_asset(task_id, "result", output_filename, media_type="image", file_name=filename)
 
-        output_filename = f"result_{task_id}_{filename}"
-        output_path = os.path.join(Config.OUTPUT_FOLDER, output_filename)
-        cv2.imwrite(output_path, results["annotated_image"])
-        self.task_service.save_task_asset(task_id, "result", output_filename, media_type="image", file_name=filename)
-
-        self._persist_detections(task_id, 0, 0.0, results)
-        summary = build_summary_payload(
-            task_type="image",
-            student_behavior_stats=results["student_behavior_counts"],
-            teacher_behavior_stats=results["teacher_behavior_counts"],
-            total_detections=len(results["student_detections"]) + len(results["teacher_detections"]),
-            average_confidence=self._compute_average_confidence(results),
-            duration=0.0,
-            processed_frames=1,
-            total_frames=1,
-        )
-        self.task_service.save_summary(task_id, **summary)
-        self.task_service.update_status(task_id, "completed", 1, 1)
-        self._log_task_event(task_id, "image", filename, "completed", processed_frames=1, total_detections=summary["total_detections"], duration=0.0)
-
-        return self._build_completed_task_result(task_id, "image")
+            self._persist_detections(task_id, 0, 0.0, results)
+            summary = build_summary_payload(
+                task_type="image",
+                student_behavior_stats=results["student_behavior_counts"],
+                teacher_behavior_stats=results["teacher_behavior_counts"],
+                total_detections=len(results["student_detections"]) + len(results["teacher_detections"]),
+                average_confidence=self._compute_average_confidence(results),
+                duration=0.0,
+                processed_frames=1,
+                total_frames=1,
+            )
+            self.task_service.save_summary(task_id, **summary)
+            self.task_service.update_status(task_id, "completed", 1, 1)
+            self._log_task_event(task_id, "image", filename, "completed", processed_frames=1, total_detections=summary["total_detections"], duration=0.0)
+            return self._build_completed_task_result(task_id, "image")
+        except Exception as exc:
+            self._mark_task_failed(
+                task_id,
+                "image",
+                filename,
+                processed_frames=0,
+                total_frames=1,
+                student_behavior_stats={},
+                teacher_behavior_stats={},
+                total_detections=0,
+                average_confidence=0.0,
+                duration=0.0,
+                error=exc,
+            )
+            raise
 
     def detect_batch_files(self, files, confidence, iou):
         valid_files = [file for file in files if file and file.filename]
@@ -101,49 +115,65 @@ class DetectionService:
         total_teacher_counts = defaultdict(int)
         confidence_sum = 0.0
         total_detections = 0
+        processed_frames = 0
+        try:
+            for idx, file in enumerate(valid_files):
+                filename = secure_filename(file.filename)
+                input_path = os.path.join(Config.UPLOAD_FOLDER, f"{task_id}_{idx}_{filename}")
+                file.save(input_path)
+                self.task_service.save_task_asset(task_id, "original", Path(input_path).name, media_type="image", frame_number=idx, file_name=filename)
+                image = cv2.imread(input_path)
+                if image is None:
+                    raise MediaError(f"无法读取图片: {filename}", code="image_read_failed")
 
-        for idx, file in enumerate(valid_files):
-            filename = secure_filename(file.filename)
-            input_path = os.path.join(Config.UPLOAD_FOLDER, f"{task_id}_{idx}_{filename}")
-            file.save(input_path)
-            self.task_service.save_task_asset(task_id, "original", Path(input_path).name, media_type="image", frame_number=idx, file_name=filename)
-            image = cv2.imread(input_path)
-            if image is None:
-                continue
+                result = detector.detect_image(image)
+                output_filename = f"result_{task_id}_{idx}_{filename}"
+                output_path = os.path.join(Config.OUTPUT_FOLDER, output_filename)
+                cv2.imwrite(output_path, result["annotated_image"])
+                self.task_service.save_task_asset(task_id, "result", output_filename, media_type="image", frame_number=idx, file_name=filename)
 
-            result = detector.detect_image(image)
-            output_filename = f"result_{task_id}_{idx}_{filename}"
-            output_path = os.path.join(Config.OUTPUT_FOLDER, output_filename)
-            cv2.imwrite(output_path, result["annotated_image"])
-            self.task_service.save_task_asset(task_id, "result", output_filename, media_type="image", frame_number=idx, file_name=filename)
+                self._persist_detections(task_id, idx, 0.0, result)
+                for behavior, count in result["student_behavior_counts"].items():
+                    total_student_counts[behavior] += count
+                for behavior, count in result["teacher_behavior_counts"].items():
+                    total_teacher_counts[behavior] += count
+                for item in result["student_detections"]:
+                    confidence_sum += item["confidence"]
+                    total_detections += 1
+                for item in result["teacher_detections"]:
+                    confidence_sum += item["confidence"]
+                    total_detections += 1
+                processed_frames += 1
 
-            self._persist_detections(task_id, idx, 0.0, result)
-            for behavior, count in result["student_behavior_counts"].items():
-                total_student_counts[behavior] += count
-            for behavior, count in result["teacher_behavior_counts"].items():
-                total_teacher_counts[behavior] += count
-            for item in result["student_detections"]:
-                confidence_sum += item["confidence"]
-                total_detections += 1
-            for item in result["teacher_detections"]:
-                confidence_sum += item["confidence"]
-                total_detections += 1
-
-        summary = build_summary_payload(
-            task_type="batch",
-            student_behavior_stats=dict(total_student_counts),
-            teacher_behavior_stats=dict(total_teacher_counts),
-            total_detections=total_detections,
-            average_confidence=(confidence_sum / total_detections) if total_detections else 0.0,
-            duration=0.0,
-            processed_frames=len(valid_files),
-            total_frames=len(valid_files),
-        )
-        self.task_service.save_summary(task_id, **summary)
-        self.task_service.update_status(task_id, "completed", len(valid_files), len(valid_files))
-        self._log_task_event(task_id, "batch", f"{len(valid_files)} images", "completed", processed_frames=len(valid_files), total_detections=summary["total_detections"], duration=0.0)
-
-        return self._build_completed_task_result(task_id, "batch")
+            summary = build_summary_payload(
+                task_type="batch",
+                student_behavior_stats=dict(total_student_counts),
+                teacher_behavior_stats=dict(total_teacher_counts),
+                total_detections=total_detections,
+                average_confidence=(confidence_sum / total_detections) if total_detections else 0.0,
+                duration=0.0,
+                processed_frames=len(valid_files),
+                total_frames=len(valid_files),
+            )
+            self.task_service.save_summary(task_id, **summary)
+            self.task_service.update_status(task_id, "completed", len(valid_files), len(valid_files))
+            self._log_task_event(task_id, "batch", f"{len(valid_files)} images", "completed", processed_frames=len(valid_files), total_detections=summary["total_detections"], duration=0.0)
+            return self._build_completed_task_result(task_id, "batch")
+        except Exception as exc:
+            self._mark_task_failed(
+                task_id,
+                "batch",
+                f"{len(valid_files)} images",
+                processed_frames=processed_frames,
+                total_frames=len(valid_files),
+                student_behavior_stats=dict(total_student_counts),
+                teacher_behavior_stats=dict(total_teacher_counts),
+                total_detections=total_detections,
+                average_confidence=(confidence_sum / total_detections) if total_detections else 0.0,
+                duration=0.0,
+                error=exc,
+            )
+            raise
 
     def start_video_detection(self, storage, confidence, iou, frame_skip):
         if not storage or storage.filename == "" or not self.is_video_file(storage.filename):
@@ -500,6 +530,47 @@ class DetectionService:
             raise TaskExecutionError("结果视频元数据无效，无法用于浏览器预览", code="video_output_invalid", status=500)
         if raw_path.exists() and raw_path != final_path:
             raw_path.unlink(missing_ok=True)
+
+    def _mark_task_failed(
+        self,
+        task_id,
+        mode,
+        file_name,
+        *,
+        processed_frames,
+        total_frames,
+        student_behavior_stats,
+        teacher_behavior_stats,
+        total_detections,
+        average_confidence,
+        duration,
+        error,
+    ):
+        try:
+            summary = build_summary_payload(
+                task_type=mode,
+                student_behavior_stats=student_behavior_stats,
+                teacher_behavior_stats=teacher_behavior_stats,
+                total_detections=total_detections,
+                average_confidence=average_confidence,
+                duration=duration,
+                processed_frames=processed_frames,
+                total_frames=total_frames,
+            )
+            self.task_service.save_summary(task_id, **summary)
+            self.task_service.update_status(task_id, "failed", processed_frames, total_frames)
+            self._log_task_event(
+                task_id,
+                mode,
+                file_name,
+                "failed",
+                processed_frames=processed_frames,
+                total_detections=summary["total_detections"],
+                duration=duration,
+                error=getattr(error, "message", str(error)),
+            )
+        except Exception:
+            self.logger.exception("failed_to_persist_task_failure task_id=%s file=%s", task_id, file_name)
 
     def _log_task_event(self, task_id, mode, file_name, status, *, processed_frames, total_detections, duration, error=None):
         payload = {
