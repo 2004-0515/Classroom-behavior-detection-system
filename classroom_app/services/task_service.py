@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from classroom_app.core.errors import TaskExecutionError
 from config import Config
 from utils.database import Database
 
@@ -11,7 +12,9 @@ class TaskService:
         self.db = Database()
 
     def create_task(self, task_id, task_type, file_name=None):
-        self.db.create_task(task_id, task_type, file_name)
+        if not self.db.create_task(task_id, task_type, file_name):
+            raise TaskExecutionError("创建任务失败，请稍后重试", code="task_create_failed", status=500)
+        return True
 
     def update_status(self, task_id, status, processed_frames=None, total_frames=None):
         self.db.update_task_status(task_id, status, processed_frames, total_frames)

@@ -21,8 +21,9 @@ ARTIFACT_PATH = ROOT / "docs" / "_artifacts" / "hardening-contracts.json"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from classroom_app.core.errors import ReportError, StreamError
+from classroom_app.core.errors import ReportError, StreamError, TaskExecutionError
 from classroom_app.services.stream_service import StreamService
+from classroom_app.services.task_service import TaskService
 from verify_report_archive import assert_batch_archive_contract as verify_batch_archive_contract
 from verify_report_archive import assert_report_html_contract
 from verify_report_archive import build_archive_expectations
@@ -161,6 +162,18 @@ def run_route_contracts() -> dict:
         with app.test_client() as client:
             login(client)
             results: dict[str, object] = {}
+
+            original_create_task = services.tasks.db.create_task
+            try:
+                services.tasks.db.create_task = lambda *args, **kwargs: False
+                results["browser_start_task_create_failure"] = assert_error(
+                    client.post("/api/streams/webcam/browser-session/start"),
+                    500,
+                    "task_create_failed",
+                    "browser webcam start surfaces task creation failure",
+                )
+            finally:
+                services.tasks.db.create_task = original_create_task
 
             browser_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(browser_start, 200, "browser webcam start for report_not_ready")
@@ -342,6 +355,7 @@ def run_route_contracts() -> dict:
                 valid_browser_task_id,
             )
             results.update(service_results)
+            results["task_service_contracts"] = run_task_service_contracts()
             results["native_webcam_contracts"] = run_native_webcam_contracts()
             return results
     finally:
@@ -612,6 +626,37 @@ class DummyTaskService:
     def get_task(self, task_id):
         task = self.tasks.get(task_id)
         return dict(task) if task else None
+
+
+def run_task_service_contracts() -> dict:
+    class FailingCreateTaskDb:
+        def __init__(self):
+            self.calls = []
+
+        def create_task(self, task_id, task_type, file_name=None):
+            self.calls.append(
+                {
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "file_name": file_name,
+                }
+            )
+            return False
+
+    task_service = TaskService.__new__(TaskService)
+    task_service.db = FailingCreateTaskDb()
+    try:
+        task_service.create_task("task-create-failure", "image", "sample.jpg")
+    except TaskExecutionError as exc:
+        if exc.code != "task_create_failed":
+            raise AssertionError(f"task creation failure should raise task_create_failed, got {exc.code!r}")
+    else:
+        raise AssertionError("task creation failure should raise TaskExecutionError")
+
+    if len(task_service.db.calls) != 1:
+        raise AssertionError("task creation failure contract should still invoke the database layer exactly once")
+
+    return {"task_create_failure": "raises_task_create_failed"}
 
 
 def run_native_webcam_contracts() -> dict:

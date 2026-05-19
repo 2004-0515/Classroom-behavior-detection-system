@@ -152,7 +152,12 @@ def webcam_metrics():
 @bp.route("/webcam/browser-session/start", methods=["POST"])
 @login_required
 def start_browser_webcam_session():
-    return api_success(_services().orchestrator.create_browser_webcam_session(), "浏览器摄像头会话已创建")
+    try:
+        return api_success(_services().orchestrator.create_browser_webcam_session(), "浏览器摄像头会话已创建")
+    except AppError as exc:
+        return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("浏览器摄像头会话创建失败，请稍后重试", "browser_webcam_start_failed", exc)
 
 
 @bp.route("/webcam/browser-session/stop", methods=["POST"])
