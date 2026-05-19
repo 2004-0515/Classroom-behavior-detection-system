@@ -28,6 +28,7 @@ if PYTHON:
             ("healthcheck", [str(PYTHON), "scripts/healthcheck.py"], 120),
             ("startup_smoke", [str(PYTHON), "scripts/startup_smoke.py"], 90),
             ("frontend_service_tests", [str(PYTHON), "scripts/frontend_service_tests.py"], 60),
+            ("verify_report_archive_test", [str(PYTHON), "scripts/verify_report_archive_test.py"], 60),
             ("ui_smoke", [str(PYTHON), "scripts/ui_smoke.py"], 120),
             ("interaction_smoke", [str(PYTHON), "scripts/interaction_smoke.py"], 120),
             ("regression_smoke", [str(PYTHON), "scripts/regression_smoke.py"], 180),
