@@ -148,6 +148,7 @@ class Database:
     
     def create_task(self, task_id: str, task_type: str, file_name: str = None) -> bool:
         """创建新的检测任务"""
+        conn = None
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -156,11 +157,13 @@ class Database:
                 VALUES (?, ?, ?, 'processing')
             ''', (task_id, task_type, file_name))
             conn.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error creating task: {e}")
             return False
+        finally:
+            if conn is not None:
+                conn.close()
     
     def update_task_status(self, task_id: str, status: str, processed_frames: int = None, total_frames: int = None):
         """更新任务状态"""
