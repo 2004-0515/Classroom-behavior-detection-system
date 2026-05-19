@@ -335,6 +335,59 @@ function suppressRetryableWebcamStartFailures(flowState) {
     flowState.consoleErrors = flowState.consoleErrors.filter((entry) => !isRetryableWebcamStartConsoleError(entry));
 }
 
+function isTransientStaticResourceRequestFailure(flowState, entry) {
+    if (!entry || entry.type !== 'requestfailed' || entry.method !== 'GET' || !entry.url) {
+        return false;
+    }
+    if (!/net::ERR_NO_BUFFER_SPACE|net::ERR_INSUFFICIENT_RESOURCES/i.test(entry.error_text || '')) {
+        return false;
+    }
+    try {
+        const parsed = new URL(entry.url);
+        return parsed.origin === flowState.origin && parsed.pathname.startsWith('/static/');
+    } catch (error) {
+        return false;
+    }
+}
+
+function isTransientStaticResourceConsoleError(flowState, entry) {
+    if (!entry || entry.type !== 'console' || !entry.location || !entry.location.url) {
+        return false;
+    }
+    if (!/Failed to load resource:\s*(net::ERR_NO_BUFFER_SPACE|net::ERR_INSUFFICIENT_RESOURCES)/i.test(entry.text || '')) {
+        return false;
+    }
+    try {
+        const parsed = new URL(entry.location.url);
+        return parsed.origin === flowState.origin && parsed.pathname.startsWith('/static/');
+    } catch (error) {
+        return false;
+    }
+}
+
+function hasTransientStaticBootstrapFailures(flowState) {
+    return flowState.networkFailures.some((entry) => isTransientStaticResourceRequestFailure(flowState, entry))
+        || flowState.consoleErrors.some((entry) => isTransientStaticResourceConsoleError(flowState, entry));
+}
+
+function suppressTransientStaticBootstrapFailures(flowState) {
+    flowState.networkFailures = flowState.networkFailures.filter((entry) => !isTransientStaticResourceRequestFailure(flowState, entry));
+    flowState.consoleErrors = flowState.consoleErrors.filter((entry) => !isTransientStaticResourceConsoleError(flowState, entry));
+}
+
+async function recoverFromTransientStaticBootstrapFailure(page, flowState, selector, reopen) {
+    const control = page.locator(selector);
+    if (await control.isVisible().catch(() => false)) {
+        return false;
+    }
+    if (!hasTransientStaticBootstrapFailures(flowState)) {
+        return false;
+    }
+    suppressTransientStaticBootstrapFailures(flowState);
+    await reopen();
+    return control.isVisible().catch(() => false);
+}
+
 async function waitForAppShell(page) {
     await page.waitForSelector('#workspaceTitle', { state: 'visible', timeout: 60000 });
     await page.waitForSelector('#historyList', { state: 'attached', timeout: 60000 });
@@ -1480,6 +1533,14 @@ async function auditWebcamFallbackFailureFlow(ctx) {
     flowState.stepLog.push('进入摄像头模式并模拟浏览器摄像头失败');
     await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
     await setCameraIndex(page, 99);
+    const recovered = await recoverFromTransientStaticBootstrapFailure(page, flowState, '#startWebcamBtn', async () => {
+        flowState.stepLog.push('检测到静态资源瞬时加载失败，重新载入摄像头页后重试');
+        await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
+        await setCameraIndex(page, 99);
+    });
+    if (recovered) {
+        flowState.stepLog.push('摄像头页已在重载后恢复');
+    }
     await page.click('#startWebcamBtn');
     await page.waitForFunction(() => {
         const notifications = document.getElementById('notifications');
@@ -1504,6 +1565,13 @@ async function auditServerWebcamFlow(ctx) {
     try {
         flowState.stepLog.push('进入摄像头模式并检查服务端摄像头诊断');
         await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
+        const recovered = await recoverFromTransientStaticBootstrapFailure(page, flowState, '#probeWebcamBtn', async () => {
+            flowState.stepLog.push('检测到静态资源瞬时加载失败，重新载入摄像头页后重试诊断');
+            await openAuthenticatedPage(page, audit.baseUrl, 'webcam');
+        });
+        if (recovered) {
+            flowState.stepLog.push('摄像头诊断入口已在重载后恢复');
+        }
         await page.click('#probeWebcamBtn');
         const probeDeadline = Date.now() + 30000;
         while (Date.now() < probeDeadline) {
