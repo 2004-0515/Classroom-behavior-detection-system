@@ -45,6 +45,14 @@ import {
     toggleHistorySelectionIds,
 } from "./lib/history.js";
 import {
+    closeDialogById,
+    focusDialogById,
+    getDialogCard as getDialogCardHelper,
+    getDialogFocusableElements as getDialogFocusableElementsHelper,
+    openDialogById,
+    trapDialogFocus as trapDialogFocusHelper,
+} from "./lib/dialogs.js";
+import {
     buildBrowserWebcamTaskPayload,
     getBrowserWebcamSessionStats,
     normalizeTaskPayload,
@@ -166,14 +174,6 @@ const browserWebcamSession = {
     video: null,
     canvas: null,
 };
-const DIALOG_FOCUSABLE_SELECTOR = [
-    "button:not([disabled])",
-    "[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    "[tabindex]:not([tabindex='-1'])",
-].join(", " );
 let activeDialogId = null;
 const dialogOpeners = new Map();
 
@@ -1710,42 +1710,19 @@ function pickModelFromLibrary(role, modelValue) {
 }
 
 function getDialogCard(id) {
-    return els[id]?.querySelector(".dialog-card") || null;
+    return getDialogCardHelper(els, id);
 }
 
 function getDialogFocusableElements(dialog) {
-    if (!dialog) return [];
-    return [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)].filter((node) => !node.hasAttribute("disabled") && !node.getAttribute("aria-hidden") && !node.classList.contains("hidden"));
+    return getDialogFocusableElementsHelper(dialog);
 }
 
 function focusDialog(id) {
-    const dialog = getDialogCard(id);
-    if (!dialog) return;
-    const [firstFocusable] = getDialogFocusableElements(dialog);
-    (firstFocusable || dialog).focus();
+    focusDialogById(els, id);
 }
 
 function trapDialogFocus(event, dialog) {
-    const focusable = getDialogFocusableElements(dialog);
-    if (!focusable.length) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!dialog.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-    }
-    if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-    } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-    }
+    trapDialogFocusHelper(event, dialog);
 }
 
 function handleDialogKeydown(event) {
@@ -1763,30 +1740,28 @@ function handleDialogKeydown(event) {
 }
 
 function openDialog(id) {
-    const node = els[id];
-    const dialog = getDialogCard(id);
-    if (!node || !dialog) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogOpeners.set(id, opener);
-    node.classList.remove("hidden");
-    node.setAttribute("aria-hidden", "false");
-    activeDialogId = id;
-    window.requestAnimationFrame(() => focusDialog(id));
+    openDialogById({
+        els,
+        id,
+        dialogOpeners,
+        getActiveElement: () => (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+        setActiveDialogId: (value) => {
+            activeDialogId = value;
+        },
+        requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
+    });
 }
 
 function closeDialog(id) {
-    const node = els[id];
-    if (!node) return;
-    node.classList.add("hidden");
-    node.setAttribute("aria-hidden", "true");
-    if (activeDialogId === id) {
-        activeDialogId = null;
-    }
-    const opener = dialogOpeners.get(id);
-    dialogOpeners.delete(id);
-    if (opener && typeof opener.focus === "function") {
-        opener.focus();
-    }
+    closeDialogById({
+        els,
+        id,
+        dialogOpeners,
+        getActiveDialogId: () => activeDialogId,
+        setActiveDialogId: (value) => {
+            activeDialogId = value;
+        },
+    });
 }
 
 // Keep formatting-aware wrappers local so shared helpers stay presentation-agnostic.
