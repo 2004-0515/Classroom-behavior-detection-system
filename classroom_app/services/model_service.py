@@ -19,6 +19,8 @@ MODEL_SELECTION_SOURCE_LABELS = {
     "manual_selection": "手动切换",
 }
 
+CHECKPOINT_NAMES = {"best", "last", "final"}
+
 
 class ModelService:
     def __init__(self, config_service):
@@ -110,8 +112,19 @@ class ModelService:
                 item["relative_path"] = str(Path(item["path"]).resolve().relative_to(self.model_root)).replace("\\", "/")
             except Exception:
                 item["relative_path"] = item["filename"]
+            manifest_meta = self._manifest_entries.get(item["relative_path"], {})
+            item["sha256"] = manifest_meta.get("sha256")
+            item["size_bytes"] = manifest_meta.get("size_bytes")
+            item.update(self._build_inventory_meta(item))
+        self._annotate_duplicate_groups(models)
         self._scan_cache = {
-            "models": sorted(models, key=lambda item: item.get("relative_path", item["filename"]).lower()),
+            "models": sorted(
+                models,
+                key=lambda item: (
+                    0 if item.get("source_group") == "official_model" else 1,
+                    item.get("relative_path", item["filename"]).lower(),
+                ),
+            ),
             "expires_at": now + 30,
         }
         return self._scan_cache["models"]
@@ -195,6 +208,7 @@ class ModelService:
     def _build_current_model_info(self, role):
         info = self.detector.get_model_info(role)
         info["relative_path"] = self._to_storage_reference(info.get("path"))
+        info["display_name"] = self._format_model_display_name(info.get("relative_path") or info.get("path"), role=role)
         info.update(self._model_selection_meta.get(role, {}))
         return info
 
@@ -217,3 +231,81 @@ class ModelService:
             return path.resolve().relative_to(self.model_root).as_posix()
         except Exception:
             return str(path)
+
+    @staticmethod
+    def _slug_part(value: str) -> str:
+        return (
+            str(value or "")
+            .strip()
+            .replace("\\", "/")
+            .split("/")[-1]
+            .rsplit(".", 1)[0]
+            .replace("_", " ")
+            .replace("-", " ")
+            .strip()
+        )
+
+    def _format_model_display_name(self, value: str | None, role: str = "") -> str:
+        relative = str(value or "").replace("\\", "/")
+        if not relative:
+            return "学生行为模型" if role == "student" else "人头检测模型" if role == "teacher" else "检测模型"
+        compact = relative.lower()
+        parts = [self._slug_part(item) for item in relative.split("/") if item and item.lower() not in {"weights"}]
+        parts = [item for item in parts if item]
+        raw_parts = [item.lower() for item in relative.split("/") if item]
+        is_checkpoint_path = Path(relative).stem.lower() in CHECKPOINT_NAMES or "weights" in raw_parts or "train" in raw_parts
+        if not is_checkpoint_path:
+            if "behavior" in compact or "student" in compact:
+                return "学生行为模型"
+            if "teacher" in compact or "head" in compact or "heand" in compact:
+                return "人头检测模型"
+        if not parts:
+            return "检测模型"
+        if parts[-1].lower() in CHECKPOINT_NAMES:
+            prefix = " · ".join(parts[:-1]) if len(parts) > 1 else "训练"
+            return f"{prefix} · {parts[-1]} 检查点"
+        return f"{parts[-1]} 模型"
+
+    def _build_inventory_meta(self, item: dict) -> dict:
+        relative_path = str(item.get("relative_path") or item.get("filename") or "").replace("\\", "/")
+        parts = [part for part in relative_path.split("/") if part]
+        stem = Path(relative_path).stem.lower()
+        is_checkpoint = stem in CHECKPOINT_NAMES or ("weights" in [part.lower() for part in parts] and "train" in [part.lower() for part in parts])
+        source_group = "training_checkpoint" if is_checkpoint else "official_model"
+        source_label = "训练检查点" if is_checkpoint else "正式模型"
+        source_detail = "来自训练输出目录" if is_checkpoint else "正式候选入口"
+        return {
+            "source_group": source_group,
+            "source_group_label": source_label,
+            "source_detail": source_detail,
+            "display_name": self._format_model_display_name(relative_path),
+            "is_checkpoint": is_checkpoint,
+            "checkpoint_name": stem if stem in CHECKPOINT_NAMES else None,
+        }
+
+    def _annotate_duplicate_groups(self, models: list[dict]):
+        grouped: dict[str, list[dict]] = {}
+        for item in models:
+            sha256 = str(item.get("sha256") or "").strip()
+            if sha256:
+                grouped.setdefault(sha256, []).append(item)
+        for sha256, items in grouped.items():
+            canonical = sorted(
+                items,
+                key=lambda entry: (
+                    0 if entry.get("source_group") == "official_model" else 1,
+                    entry.get("relative_path", entry.get("filename", "")).lower(),
+                ),
+            )[0]
+            for item in items:
+                item["duplicate_group_id"] = sha256
+                item["canonical_relative_path"] = canonical.get("relative_path")
+                item["canonical_display_name"] = canonical.get("display_name")
+                item["is_duplicate_alias"] = item is not canonical
+                item["is_official_entry"] = item.get("source_group") == "official_model"
+                item["duplicate_count"] = len(items)
+                item["duplicate_note"] = (
+                    f"与 {canonical.get('relative_path')} 指向同一模型文件"
+                    if len(items) > 1 and item is not canonical
+                    else (f"同一模型共有 {len(items)} 个入口" if len(items) > 1 else "")
+                )

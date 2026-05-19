@@ -78,11 +78,8 @@ function prettifyAsciiLabel(value) {
     const lookupKey = normalizeLookupKey(value);
     if (!slug) return "未命名";
     if (BEHAVIOR_LABELS[lookupKey]) return BEHAVIOR_LABELS[lookupKey];
-    const compact = slug
-        .replace(/\b(best|last|final|v\d+)\b/gi, "")
-        .replace(/\s+/g, " ")
-        .trim();
-    if (!compact) return "未命名";
+    if (/^(best|last|final)$/i.test(slug)) return `${toTitleWords(slug)} 检查点`;
+    const compact = slug.replace(/\bv(\d+)\b/gi, "v$1").replace(/\s+/g, " ").trim();
     return toTitleWords(compact);
 }
 

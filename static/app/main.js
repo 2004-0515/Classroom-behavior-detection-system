@@ -911,7 +911,9 @@ function populateModelSelects() {
     const buildOptions = (selectedPath) => ['<option value="">请选择模型</option>', ...models.map((model) => {
         const value = model.relative_path || model.filename;
         const selected = selectedPath && selectedPath.includes(value) ? "selected" : "";
-        return `<option value="${value}" ${selected}>${truncate(formatModelDetail(value), 28)}</option>`;
+        const label = model.display_name || formatModelDetail(value);
+        const suffix = model.is_duplicate_alias ? " · 重复入口" : "";
+        return `<option value="${value}" ${selected}>${truncate(`${label}${suffix}`, 28)}</option>`;
     })].join("");
     if (models.length) {
         els.studentModelSelect.innerHTML = buildOptions(modelInfo?.student?.path);
@@ -922,13 +924,13 @@ function populateModelSelects() {
     els.applyModelsBtn.disabled = studentLocked && teacherLocked;
     els.modelMeta.innerHTML = `
         <div>
-            <strong>${formatModelName(modelInfo?.student?.path, "student")}</strong>
-            <span>${truncate(formatModelDetail(modelInfo?.student?.path || "未加载"), 22)}</span>
+            <strong>${modelInfo?.student?.display_name || formatModelName(modelInfo?.student?.relative_path || modelInfo?.student?.path, "student")}</strong>
+            <span>${truncate(formatModelDetail(modelInfo?.student?.relative_path || modelInfo?.student?.path || "未加载"), 22)}</span>
             <small>${modelInfo?.student?.selection_source_label || "未记录来源"}${modelInfo?.student?.selection_locked ? " · 已锁定" : ""}</small>
         </div>
         <div>
-            <strong>${formatModelName(modelInfo?.teacher?.path, "teacher")}</strong>
-            <span>${truncate(formatModelDetail(modelInfo?.teacher?.path || "未加载"), 22)}</span>
+            <strong>${modelInfo?.teacher?.display_name || formatModelName(modelInfo?.teacher?.relative_path || modelInfo?.teacher?.path, "teacher")}</strong>
+            <span>${truncate(formatModelDetail(modelInfo?.teacher?.relative_path || modelInfo?.teacher?.path || "未加载"), 22)}</span>
             <small>${modelInfo?.teacher?.selection_source_label || "未记录来源"}${modelInfo?.teacher?.selection_locked ? " · 已锁定" : ""}</small>
         </div>
     `;
@@ -1659,7 +1661,7 @@ function openCurrentModelDialog() {
         const item = modelInfo[type] || {};
         return `
             <article class="model-detail-card">
-                <strong>${formatModelName(item.path, type)}</strong>
+                <strong>${item.display_name || formatModelName(item.relative_path || item.path, type)}</strong>
                 <span>${truncate(item.path || "未加载", 52)}</span>
                 <small>来源：${item.selection_source_label || "未记录"}${item.selection_locked ? " · 已锁定" : ""}</small>
                 <small>状态：${item.loaded ? "已加载" : item.error || "未加载"}</small>
@@ -1672,24 +1674,52 @@ function openCurrentModelDialog() {
     openDialog("modelDetailsModal");
 }
 
+function renderModelLibraryItem(item, modelInfo) {
+    const isStudentCurrent = item.relative_path && item.relative_path === modelInfo.student?.relative_path;
+    const isTeacherCurrent = item.relative_path && item.relative_path === modelInfo.teacher?.relative_path;
+    const stateTags = [
+        isStudentCurrent ? `<span class="mini-tag tone-1"><strong>当前学生模型</strong></span>` : "",
+        isTeacherCurrent ? `<span class="mini-tag tone-2"><strong>当前教师模型</strong></span>` : "",
+        item.is_duplicate_alias ? `<span class="mini-tag muted"><strong>重复入口</strong></span>` : "",
+    ].filter(Boolean).join("");
+    return `
+        <article class="model-library-item">
+            <strong>${truncate(item.display_name || formatModelDetail(item.relative_path || item.filename), 32)}</strong>
+            <span>${truncate(item.relative_path || item.filename, 54)}</span>
+            <small>${item.error ? `读取失败：${item.error}` : `${item.num_classes || 0} 个类别 · ${item.file_size_mb || "--"} MB · ${item.source_detail || item.task || "detect"}`}</small>
+            ${item.duplicate_note ? `<small>${item.duplicate_note}</small>` : ""}
+            <div class="tag-row compact">${stateTags}${(item.classes || []).slice(0, 8).map((name, index) => `<span class="mini-tag tone-${(index % 4) + 1}"><strong>${formatBehaviorLabel(name)}</strong></span>`).join("") || `<span class="mini-tag muted">无类别信息</span>`}</div>
+            <div class="inline-actions model-library-actions">
+                <button class="ghost-btn model-pick-btn" type="button" data-role="student" data-model="${item.relative_path || item.filename}" ${modelInfo.student?.selection_locked ? "disabled" : ""}>设为学生模型</button>
+                <button class="ghost-btn model-pick-btn" type="button" data-role="teacher" data-model="${item.relative_path || item.filename}" ${modelInfo.teacher?.selection_locked ? "disabled" : ""}>设为教师模型</button>
+            </div>
+        </article>
+    `;
+}
+
+function buildModelLibrarySections(models, modelInfo) {
+    const groups = new Map();
+    models.forEach((item) => {
+        const key = item.source_group || "other";
+        const group = groups.get(key) || [];
+        group.push(item);
+        groups.set(key, group);
+    });
+    return [...groups.entries()].map(([key, items]) => `
+        <section class="model-library-group" data-group="${key}">
+            <div class="panel-title-row"><strong>${items[0]?.source_group_label || "候选模型"}</strong><span class="pill info">${items.length} 个</span></div>
+            <div class="model-library-group-list">${items.map((item) => renderModelLibraryItem(item, modelInfo)).join("")}</div>
+        </section>
+    `).join("");
+}
+
 async function openModelLibraryDialog() {
     if (!getState().models?.length) {
         await loadModels(true);
     }
     const models = getState().models || [];
     const modelInfo = getState().modelInfo || {};
-    els.modelLibraryContent.innerHTML = models.length ? models.map((item) => `
-        <article class="model-library-item">
-            <strong>${truncate(formatModelDetail(item.relative_path || item.filename), 32)}</strong>
-            <span>${truncate(item.relative_path || item.filename, 54)}</span>
-            <small>${item.error ? `读取失败：${item.error}` : `${item.num_classes || 0} 个类别 · ${item.file_size_mb || "--"} MB · ${item.task || "detect"}`}</small>
-            <div class="tag-row compact">${(item.classes || []).slice(0, 8).map((name, index) => `<span class="mini-tag tone-${(index % 4) + 1}"><strong>${formatBehaviorLabel(name)}</strong></span>`).join("") || `<span class="mini-tag muted">无类别信息</span>`}</div>
-            <div class="inline-actions model-library-actions">
-                <button class="ghost-btn model-pick-btn" type="button" data-role="student" data-model="${item.relative_path || item.filename}" ${modelInfo.student?.selection_locked ? "disabled" : ""}>设为学生模型</button>
-                <button class="ghost-btn model-pick-btn" type="button" data-role="teacher" data-model="${item.relative_path || item.filename}" ${modelInfo.teacher?.selection_locked ? "disabled" : ""}>设为教师模型</button>
-            </div>
-        </article>
-    `).join("") : `<div class="model-library-item">当前未扫描到候选模型</div>`;
+    els.modelLibraryContent.innerHTML = models.length ? buildModelLibrarySections(models, modelInfo) : `<div class="model-library-item">当前未扫描到候选模型</div>`;
     [...els.modelLibraryContent.querySelectorAll(".model-pick-btn")].forEach((node) => {
         node.addEventListener("click", () => pickModelFromLibrary(node.dataset.role, node.dataset.model));
     });
