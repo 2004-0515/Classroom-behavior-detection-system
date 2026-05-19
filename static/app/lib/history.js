@@ -29,7 +29,9 @@ export function compareHistoryTasks(left, right, sort, taskPayloadMap = {}) {
     const leftSummary = taskPayloadMap[left.task_id] || {};
     const rightSummary = taskPayloadMap[right.task_id] || {};
     if (sort === "detections") {
-        const diff = Number(rightSummary.total_detections || right.total_detections || 0) - Number(leftSummary.total_detections || left.total_detections || 0);
+        const leftMetric = Number(leftSummary.display_metrics?.history_sort_value ?? leftSummary.total_detections ?? left.total_detections ?? 0);
+        const rightMetric = Number(rightSummary.display_metrics?.history_sort_value ?? rightSummary.total_detections ?? right.total_detections ?? 0);
+        const diff = rightMetric - leftMetric;
         if (diff !== 0) return diff;
     }
     if (sort === "duration") {

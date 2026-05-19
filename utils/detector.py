@@ -6,6 +6,12 @@ from typing import Dict, List, Tuple, Any
 import time
 from collections import defaultdict, deque
 
+from tracking_fallback import (
+    TRACK_ID_FALLBACK_IOU,
+    TRACK_ID_FALLBACK_MAX_FRAME_GAP,
+    TrackAssignmentState,
+    assign_track_ids_for_frame,
+)
 
 def _prepare_yolo_runtime() -> None:
     project_root = Path(__file__).resolve().parent.parent
@@ -18,6 +24,106 @@ _prepare_yolo_runtime()
 
 from ultralytics import YOLO
 
+TRACKER_CONFIG = "bytetrack.yaml"
+
+
+def _draw_detection(image: np.ndarray, *, bbox: list[float], label: str, color: tuple[int, int, int]) -> None:
+    x1, y1, x2, y2 = [int(value) for value in bbox]
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+    cv2.putText(
+        image,
+        label,
+        (x1, max(18, y1 - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        color,
+        2,
+    )
+
+
+class TrackingRuntime:
+    def __init__(self, student_model_path: str, teacher_model_path: str, conf_threshold: float, iou_threshold: float, img_size: int):
+        self.conf_threshold = conf_threshold
+        self.iou_threshold = iou_threshold
+        self.img_size = img_size
+        self.student_model = YOLO(student_model_path) if student_model_path and Path(student_model_path).exists() else None
+        self.teacher_model = YOLO(teacher_model_path) if teacher_model_path and Path(teacher_model_path).exists() else None
+        self._frame_index = 0
+        self._fallback_trackers = {
+            "student": TrackAssignmentState(),
+            "teacher": TrackAssignmentState(),
+        }
+
+    def _assign_fallback_track_ids(self, source: str, detections: List[Dict[str, Any]]) -> None:
+        state = self._fallback_trackers[source]
+        assignments = assign_track_ids_for_frame(
+            [
+                (
+                    detection,
+                    tuple(float(value) for value in detection["bbox"]),
+                    int(detection["track_id"]) if detection.get("track_id") is not None else None,
+                )
+                for detection in detections
+            ],
+            frame_number=self._frame_index,
+            state=state,
+            iou_threshold=TRACK_ID_FALLBACK_IOU,
+            max_frame_gap=TRACK_ID_FALLBACK_MAX_FRAME_GAP,
+        )
+        for detection, track_id in assignments:
+            detection["track_id"] = int(track_id)
+
+    def detect_image(self, image: np.ndarray) -> Dict[str, Any]:
+        self._frame_index += 1
+        results = {
+            "student_detections": [],
+            "teacher_detections": [],
+            "annotated_image": image.copy(),
+            "student_behavior_counts": {},
+            "teacher_behavior_counts": {},
+        }
+        for source, model, color in (
+            ("student", self.student_model, (255, 0, 0)),
+            ("teacher", self.teacher_model, (0, 255, 0)),
+        ):
+            if not model:
+                continue
+            tracked_results = model.track(
+                image,
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                imgsz=self.img_size,
+                verbose=False,
+                persist=True,
+                tracker=TRACKER_CONFIG,
+            )
+            source_detections = []
+            for result in tracked_results:
+                boxes = result.boxes
+                track_ids = boxes.id.int().cpu().tolist() if getattr(boxes, "id", None) is not None else [None] * len(boxes)
+                for index, box in enumerate(boxes):
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+                    label = result.names[cls]
+                    track_id = int(track_ids[index]) if track_ids[index] is not None else None
+                    source_detections.append(
+                        {
+                            "behavior": label,
+                            "confidence": conf,
+                            "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                            "track_id": track_id,
+                        }
+                    )
+            self._assign_fallback_track_ids(source, source_detections)
+            bucket = results[f"{source}_behavior_counts"]
+            for item in source_detections:
+                results[f"{source}_detections"].append(item)
+                bucket[item["behavior"]] = bucket.get(item["behavior"], 0) + 1
+                track_id = item.get("track_id")
+                display_label = "{} #{} {:.2f}".format(item["behavior"], track_id, item["confidence"]) if track_id is not None else "{} {:.2f}".format(item["behavior"], item["confidence"])
+                _draw_detection(results["annotated_image"], bbox=item["bbox"], label=display_label, color=color)
+        return results
 
 class BehaviorDetector:
     """双模型行为检测器"""
@@ -201,6 +307,15 @@ class BehaviorDetector:
                 'path': path,
                 'error': str(e)
             }
+
+    def create_tracking_runtime(self):
+        return TrackingRuntime(
+            student_model_path=self.student_model_path,
+            teacher_model_path=self.teacher_model_path,
+            conf_threshold=self.conf_threshold,
+            iou_threshold=self.iou_threshold,
+            img_size=self.img_size,
+        )
     
     def update_parameters(self, conf_threshold: float = None, iou_threshold: float = None, img_size: int = None):
         """更新检测参数"""

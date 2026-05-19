@@ -1195,6 +1195,16 @@ select:focus,
     gap: 12px;
 }
 
+.model-library-group {
+    display: grid;
+    gap: 12px;
+}
+
+.model-library-group-list {
+    display: grid;
+    gap: 12px;
+}
+
 .model-library-actions {
     margin-top: 4px;
     flex-wrap: wrap;

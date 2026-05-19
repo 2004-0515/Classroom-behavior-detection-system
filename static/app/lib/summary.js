@@ -1,5 +1,9 @@
 export function getTopBehaviors(summary, limit = 3, formatBehaviorLabel) {
     if (!summary) return [];
+    const displayItems = summary.display_metrics?.top_behaviors;
+    if (displayItems?.length) {
+        return displayItems.slice(0, limit).map((item) => ({ ...item, label: item.label || formatBehaviorLabel(item.raw_label || "") }));
+    }
     return [
         ...Object.entries(summary.student_behavior_stats || {}),
         ...Object.entries(summary.teacher_behavior_stats || {}),
@@ -18,6 +22,7 @@ export function renderBehaviorTags(items, formatNumber) {
 export function buildTaskHighlight(task, summary, getTopBehaviors, formatNumber) {
     if (task.status === "processing") return "任务处理中，等待结果摘要生成";
     if (task.status === "failed") return "任务失败或被中止，可点击回看已生成内容";
+    if (summary?.display_metrics?.highlight?.history_text) return summary.display_metrics.highlight.history_text;
     const topEntry = getTopBehaviors(summary, 1)[0];
     if (topEntry) return `亮点：${topEntry.label} ${formatNumber(topEntry.value)} 次`;
     if (summary?.total_detections) return `亮点：共识别 ${formatNumber(summary.total_detections)} 个目标`;

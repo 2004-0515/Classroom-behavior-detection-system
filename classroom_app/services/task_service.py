@@ -38,6 +38,8 @@ class TaskService:
                 kwargs.get("total_detections", 0),
                 kwargs.get("average_confidence", 0.0),
                 kwargs.get("duration", 0.0),
+                display_metrics=kwargs.get("display_metrics", {}),
+                derived_metrics=kwargs.get("derived_metrics", {}),
             )
             return
         self.db.save_summary(*args)

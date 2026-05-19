@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import json
 import shutil
@@ -22,6 +23,9 @@ if str(ROOT) not in sys.path:
 
 from classroom_app.core.errors import ReportError, StreamError
 from classroom_app.services.stream_service import StreamService
+from verify_report_archive import assert_batch_archive_contract as verify_batch_archive_contract
+from verify_report_archive import assert_report_html_contract
+from verify_report_archive import build_archive_expectations
 
 
 ADMIN_USERNAME = "hardening_admin"
@@ -123,6 +127,28 @@ def require_report_meta(config, report_filename: str) -> tuple[Path, dict]:
     return report_path, json.loads(meta_path.read_text(encoding="utf-8"))
 
 
+def load_task_summary(client, task_id: str) -> dict:
+    response = client.get(f"/api/tasks/{task_id}/summary")
+    assert_status(response, 200, f"task summary {task_id}")
+    return response.get_json()["data"]
+
+
+def ensure_generated_report(client, config, task_id: str, label: str) -> dict:
+    summary = load_task_summary(client, task_id)
+    response = client.get(f"/api/tasks/{task_id}/report")
+    assert_status(response, 200, label)
+    report_payload = response.get_json()["data"]
+    report_path, report_meta = require_report_meta(config, report_payload["report_filename"])
+    report_validation = assert_report_html_contract(summary, report_path.read_text(encoding="utf-8"), label)
+    return {
+        "summary": summary,
+        "report_payload": report_payload,
+        "report_path": report_path,
+        "report_meta": report_meta,
+        "report_validation": report_validation,
+    }
+
+
 def run_route_contracts() -> dict:
     temp_root, config = configure_temp_environment()
     try:
@@ -170,6 +196,14 @@ def run_route_contracts() -> dict:
             invalid_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(invalid_start, 200, "browser webcam start for invalid image")
             invalid_task_id = invalid_start.get_json()["data"]["task_id"]
+            invalid_frame = client.post(
+                "/api/detect/frame",
+                json={
+                    "image": build_data_url(sample_images[0]),
+                    "tracking_session_id": invalid_task_id,
+                },
+            )
+            assert_status(invalid_frame, 200, "browser webcam capture before invalid image stop")
             results["browser_invalid_image"] = assert_error(
                 client.post(
                     "/api/streams/webcam/browser-session/stop",
@@ -195,6 +229,14 @@ def run_route_contracts() -> dict:
             valid_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(valid_start, 200, "browser webcam start for valid session")
             valid_browser_task_id = valid_start.get_json()["data"]["task_id"]
+            valid_frame = client.post(
+                "/api/detect/frame",
+                json={
+                    "image": build_data_url(sample_images[0]),
+                    "tracking_session_id": valid_browser_task_id,
+                },
+            )
+            assert_status(valid_frame, 200, "browser webcam capture before valid stop")
             valid_browser_stop = client.post(
                 "/api/streams/webcam/browser-session/stop",
                 json={
@@ -225,10 +267,10 @@ def run_route_contracts() -> dict:
             }
 
             report_task_id = detect_image_task(client, sample_images[0])
-            report_ready = client.get(f"/api/tasks/{report_task_id}/report")
-            assert_status(report_ready, 200, "single report ready")
-            report_payload = report_ready.get_json()["data"]
-            report_path, report_meta = require_report_meta(config, report_payload["report_filename"])
+            report_contract = ensure_generated_report(client, config, report_task_id, "single report ready")
+            report_payload = report_contract["report_payload"]
+            report_path = report_contract["report_path"]
+            report_meta = report_contract["report_meta"]
             report_mtime_before = report_path.stat().st_mtime_ns
             time.sleep(1.1)
             report_ready_again = client.get(f"/api/tasks/{report_task_id}/report")
@@ -259,6 +301,7 @@ def run_route_contracts() -> dict:
             )
 
             batch_task_id = detect_batch_task(client, sample_images[:2])
+            batch_report_contract = ensure_generated_report(client, config, batch_task_id, "batch task report ready")
             batch_export = client.post("/api/tasks/reports/batch", json={"task_ids": [report_task_id, batch_task_id]})
             assert_status(batch_export, 200, "batch report export")
             batch_payload = batch_export.get_json()["data"]
@@ -266,13 +309,21 @@ def run_route_contracts() -> dict:
             if not zip_path.exists():
                 raise AssertionError("batch export zip missing")
             with zipfile.ZipFile(zip_path) as archive:
-                names = set(archive.namelist())
-                expected = {"readme.txt", "manifest.csv"}
-                if not expected.issubset(names):
-                    raise AssertionError(f"batch export missing manifest files: {sorted(names)}")
+                verify_batch_archive_contract(
+                    archive,
+                    build_archive_expectations(
+                        [report_contract, batch_report_contract],
+                        report_filename_path="report_payload.report_filename",
+                    ),
+                    "batch export",
+                )
             results["batch_export_success"] = {
                 "zip_filename": batch_payload["zip_filename"],
                 "report_count": batch_payload["report_count"],
+                "report_filenames": [
+                    report_contract["report_payload"]["report_filename"],
+                    batch_report_contract["report_payload"]["report_filename"],
+                ],
             }
 
             results["batch_export_failure"] = assert_error(
@@ -282,7 +333,14 @@ def run_route_contracts() -> dict:
                 "batch export blocks invalid member",
             )
 
-            service_results = run_report_service_contracts(services, client, report_task_id, batch_task_id, sample_images[0])
+            service_results = run_report_service_contracts(
+                services,
+                client,
+                report_task_id,
+                batch_task_id,
+                sample_images[0],
+                valid_browser_task_id,
+            )
             results.update(service_results)
             results["native_webcam_contracts"] = run_native_webcam_contracts()
             return results
@@ -290,7 +348,14 @@ def run_route_contracts() -> dict:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def run_report_service_contracts(services, client, report_task_id: str, batch_task_id: str, sample_image: Path) -> dict:
+def run_report_service_contracts(
+    services,
+    client,
+    report_task_id: str,
+    batch_task_id: str,
+    sample_image: Path,
+    tracking_task_id: str,
+) -> dict:
     report_service = services.reports
     payload_service = services.task_payloads
     task_service = services.tasks
@@ -329,6 +394,52 @@ def run_report_service_contracts(services, client, report_task_id: str, batch_ta
     results["report_fingerprint_refresh"] = {
         "task_id": report_task_id,
         "reused": refreshed_report["reused"],
+    }
+
+    tracking_summary = payload_service.build_task_payload(tracking_task_id, include_assets=True, include_live_metrics=False)
+    tracking_report = report_service.ensure_task_report(tracking_summary)
+    tracking_report_path = tracking_report["report_path"]
+    tracking_mtime_before = tracking_report_path.stat().st_mtime_ns
+    tracking_display_metrics = copy.deepcopy(tracking_summary.get("display_metrics") or {})
+    tracking_derived_metrics = copy.deepcopy(tracking_summary.get("derived_metrics") or {})
+    tracking_cards = tracking_display_metrics.get("cards") or []
+    if not tracking_cards:
+        raise AssertionError("tracking report refresh contract requires display metric cards")
+    tracking_label = str(tracking_cards[0].get("label") or "独立目标数")
+    sentinel_value = "999 个"
+    tracking_cards[0]["formatted"] = sentinel_value
+    tracking_cards[0]["value"] = 999
+    primary_stat = tracking_display_metrics.get("primary_stat") or {}
+    if primary_stat:
+        primary_stat["formatted"] = sentinel_value
+        primary_stat["value"] = 999
+    highlight = tracking_display_metrics.get("highlight") or {}
+    if highlight:
+        highlight["history_text"] = f"亮点：{tracking_label} {sentinel_value}"
+    tracking_derived_metrics["unique_targets"] = 999
+    time.sleep(1.1)
+    task_service.save_summary(
+        tracking_task_id,
+        tracking_summary.get("student_behavior_stats") or {},
+        tracking_summary.get("teacher_behavior_stats") or {},
+        int(tracking_summary.get("total_detections") or 0),
+        float(tracking_summary.get("average_confidence") or 0.0),
+        float(tracking_summary.get("duration") or 0.0),
+        display_metrics=tracking_display_metrics,
+        derived_metrics=tracking_derived_metrics,
+    )
+    refreshed_tracking_summary = payload_service.build_task_payload(tracking_task_id, include_assets=True, include_live_metrics=False)
+    refreshed_tracking_report = report_service.ensure_task_report(refreshed_tracking_summary)
+    if refreshed_tracking_report["report_path"].stat().st_mtime_ns <= tracking_mtime_before:
+        raise AssertionError("tracking report display_metrics drift did not force regeneration")
+    tracking_html = refreshed_tracking_report["report_path"].read_text(encoding="utf-8")
+    if tracking_label not in tracking_html or sentinel_value not in tracking_html:
+        raise AssertionError("tracking report HTML did not render refreshed display metrics")
+    results["tracking_report_metric_refresh"] = {
+        "task_id": tracking_task_id,
+        "reused": refreshed_tracking_report["reused"],
+        "metric_label": tracking_label,
+        "metric_value": sentinel_value,
     }
 
     failing_task_id = detect_image_task(client, sample_image)
@@ -393,6 +504,20 @@ class DummyDetector:
             "average_confidence": 0.0,
         }
 
+    def create_tracking_runtime(self):
+        class _DummyTrackingRuntime:
+            @staticmethod
+            def detect_image(_image):
+                return {
+                    "student_detections": [],
+                    "teacher_detections": [],
+                    "annotated_image": _image,
+                    "student_behavior_counts": {},
+                    "teacher_behavior_counts": {},
+                }
+
+        return _DummyTrackingRuntime()
+
 
 class DummyModelService:
     def __init__(self):
@@ -435,27 +560,45 @@ class DummyTaskService:
         if task_id in self.tasks:
             self.tasks[task_id].update(update)
 
-    def save_summary(self, task_id, student_behavior_stats, teacher_behavior_stats, total_detections, average_confidence, duration):
-        self.saved_summaries.append(
-            {
+    def save_summary(self, *args, **kwargs):
+        if kwargs:
+            task_id = args[0] if args else kwargs.get("task_id")
+            summary_record = {
+                "task_id": task_id,
+                "student_behavior_stats": kwargs.get("student_behavior_stats", {}),
+                "teacher_behavior_stats": kwargs.get("teacher_behavior_stats", {}),
+                "total_detections": kwargs.get("total_detections", 0),
+                "average_confidence": kwargs.get("average_confidence", 0.0),
+                "duration": kwargs.get("duration", 0.0),
+                "processed_frames": kwargs.get("processed_frames", 0),
+                "total_frames": kwargs.get("total_frames", 0),
+                "display_metrics": kwargs.get("display_metrics", {}),
+                "derived_metrics": kwargs.get("derived_metrics", {}),
+            }
+        else:
+            (
+                task_id,
+                student_behavior_stats,
+                teacher_behavior_stats,
+                total_detections,
+                average_confidence,
+                duration,
+            ) = args
+            summary_record = {
                 "task_id": task_id,
                 "student_behavior_stats": student_behavior_stats,
                 "teacher_behavior_stats": teacher_behavior_stats,
                 "total_detections": total_detections,
                 "average_confidence": average_confidence,
                 "duration": duration,
+                "processed_frames": 0,
+                "total_frames": 0,
+                "display_metrics": {},
+                "derived_metrics": {},
             }
-        )
+        self.saved_summaries.append(summary_record)
         if task_id in self.tasks:
-            self.tasks[task_id].update(
-                {
-                    "student_behavior_stats": student_behavior_stats,
-                    "teacher_behavior_stats": teacher_behavior_stats,
-                    "total_detections": total_detections,
-                    "average_confidence": average_confidence,
-                    "duration": duration,
-                }
-            )
+            self.tasks[task_id].update(summary_record)
 
     def save_task_asset(self, *args, **kwargs):
         self.assets.append((args, kwargs))

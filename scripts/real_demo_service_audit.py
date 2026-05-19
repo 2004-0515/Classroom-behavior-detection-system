@@ -15,6 +15,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from demo_runtime_contract import load_admin_username, open_authenticated_session, read_demo_entry_contract
+from verify_report_archive import assert_batch_archive_contract as verify_batch_archive_contract
+from verify_report_archive import assert_report_html_contract
+from verify_report_archive import build_archive_expectations
 
 
 START_SCRIPT = ROOT / "start_demo_session.bat"
@@ -123,6 +126,10 @@ def guess_mime(path: Path) -> str:
     return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
+def strip_internal_task_context(task_result: dict) -> dict:
+    return {key: value for key, value in task_result.items() if not str(key).startswith("_")}
+
+
 def detect_image_task(session_client: requests.Session) -> dict:
     with SAMPLE_IMAGE.open("rb") as file_obj:
         data = api_request(
@@ -135,14 +142,12 @@ def detect_image_task(session_client: requests.Session) -> dict:
         )
     task_id = str(data["task_id"])
     detail = api_request(session_client, "GET", f"/api/tasks/{task_id}")
+    summary = api_request(session_client, "GET", f"/api/tasks/{task_id}/summary")
     report = api_request(session_client, "GET", f"/api/tasks/{task_id}/report", timeout=120)
     report_html = session_client.get(f"{BASE_URL}{report['report_url']}", timeout=60)
     if report_html.status_code != 200:
         raise AssertionError(f"report HTML unavailable: {report_html.status_code}")
-    html = report_html.text
-    for marker in ("课堂行为检测报告", "学生行为分析"):
-        if marker not in html:
-            raise AssertionError(f"report HTML missing marker: {marker}")
+    report_validation = assert_report_html_contract(summary, report_html.text, "image report")
     if not detail.get("assets", {}).get("result"):
         raise AssertionError("image task missing result asset")
     return {
@@ -151,6 +156,9 @@ def detect_image_task(session_client: requests.Session) -> dict:
         "report_url": report["report_url"],
         "report_filename": report["report_filename"],
         "total_detections": detail.get("total_detections"),
+        "_summary": summary,
+        "report_metric_cards_verified": report_validation["metric_count"] > 0,
+        "report_metric_labels": [item["label"] for item in report_validation["verified_metrics"]],
     }
 
 
@@ -171,14 +179,24 @@ def detect_batch_task(session_client: requests.Session) -> dict:
             handle.close()
     task_id = str(data["task_id"])
     detail = api_request(session_client, "GET", f"/api/tasks/{task_id}")
+    summary = api_request(session_client, "GET", f"/api/tasks/{task_id}/summary")
+    report = api_request(session_client, "GET", f"/api/tasks/{task_id}/report", timeout=120)
+    report_html = session_client.get(f"{BASE_URL}{report['report_url']}", timeout=60)
+    if report_html.status_code != 200:
+        raise AssertionError(f"batch report HTML unavailable: {report_html.status_code}")
+    report_validation = assert_report_html_contract(summary, report_html.text, "batch report")
     results = detail.get("assets", {}).get("results", [])
     if len(results) < len(BATCH_IMAGES):
         raise AssertionError(f"batch task results too short: {len(results)}")
     return {
         "task_id": task_id,
         "result_count": len(results),
-        "report_url": detail.get("assets", {}).get("report"),
+        "report_url": report.get("report_url"),
+        "report_filename": report.get("report_filename"),
         "total_detections": detail.get("total_detections"),
+        "_summary": summary,
+        "report_metric_cards_verified": report_validation["metric_count"] > 0,
+        "report_metric_labels": [item["label"] for item in report_validation["verified_metrics"]],
     }
 
 
@@ -240,6 +258,12 @@ def detect_video_task(session_client: requests.Session) -> dict:
     result_video = task.get("assets", {}).get("result")
     if not result_video or not result_video.lower().endswith(".mp4"):
         raise AssertionError(f"video task missing mp4 result asset: {task.get('assets')}")
+    summary = api_request(session_client, "GET", f"/api/tasks/{task_id}/summary")
+    report = api_request(session_client, "GET", f"/api/tasks/{task_id}/report", timeout=120)
+    report_html = session_client.get(f"{BASE_URL}{report['report_url']}", timeout=60)
+    if report_html.status_code != 200:
+        raise AssertionError(f"video report HTML unavailable: {report_html.status_code}")
+    report_validation = assert_report_html_contract(summary, report_html.text, "video report")
     return {
         "task_id": task_id,
         "status": task.get("status"),
@@ -247,26 +271,32 @@ def detect_video_task(session_client: requests.Session) -> dict:
         "total_frames": task.get("total_frames"),
         "total_detections": task.get("total_detections"),
         "result": result_video,
-        "report_url": task.get("assets", {}).get("report"),
+        "report_url": report.get("report_url"),
+        "report_filename": report.get("report_filename"),
         "first_feed_chunk_bytes": first_chunk_size,
+        "_summary": summary,
+        "report_metric_cards_verified": report_validation["metric_count"] > 0,
+        "report_metric_labels": [item["label"] for item in report_validation["verified_metrics"]],
     }
 
 
-def export_batch_reports(session_client: requests.Session, task_ids: list[str]) -> dict:
+def export_batch_reports(session_client: requests.Session, expected_reports: list[dict]) -> dict:
     data = api_request(
         session_client,
         "POST",
         "/api/tasks/reports/batch",
-        json={"task_ids": task_ids},
+        json={"task_ids": [str(item["task_id"]) for item in expected_reports]},
         timeout=180,
     )
     file_size = download_file(session_client, data["zip_url"], BATCH_ZIP_PATH)
     with zipfile.ZipFile(BATCH_ZIP_PATH) as archive:
-        names = set(archive.namelist())
-        if "readme.txt" not in names or "manifest.csv" not in names:
-            raise AssertionError(f"batch report archive missing manifest files: {sorted(names)}")
-        html_count = len([name for name in names if name.startswith("report-") and name.endswith(".html")])
-        if html_count < len(task_ids):
+        verify_batch_archive_contract(
+            archive,
+            build_archive_expectations(expected_reports, summary_path="_summary"),
+            "batch report archive",
+        )
+        html_count = len([name for name in archive.namelist() if name.startswith("report-") and name.endswith(".html")])
+        if html_count < len(expected_reports):
             raise AssertionError(f"batch report archive HTML count too small: {html_count}")
     return {
         "report_count": data.get("report_count"),
@@ -353,13 +383,50 @@ def verify_webcam_contract(session_client: requests.Session) -> dict:
     if not diagnostics.get("selected"):
         return result
 
-    start = api_request(
-        session_client,
-        "POST",
-        "/api/streams/webcam/start",
-        json={"camera_index": 0, "confidence": 0.25, "iou": 0.45},
-        timeout=60,
-    )
+    start_payload = None
+    last_start_error = None
+    for attempt in range(2):
+        response = session_client.post(
+            f"{BASE_URL}/api/streams/webcam/start",
+            json={"camera_index": 0, "confidence": 0.25, "iou": 0.45},
+            timeout=60,
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if not payload.get("success"):
+                error = payload.get("error") or {}
+                raise AssertionError(
+                    f"POST /api/streams/webcam/start failed: [{error.get('code')}] {error.get('message')}"
+                )
+            start_payload = payload.get("data") or {}
+            break
+        payload = {}
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        error = payload.get("error") or {}
+        last_start_error = {
+            "status": response.status_code,
+            "code": error.get("code"),
+            "message": error.get("message") or response.text[:200],
+            "attempt": attempt + 1,
+        }
+        if response.status_code == 400 and error.get("code") == "webcam_unavailable" and attempt == 0:
+            time.sleep(2.0)
+            diagnostics = api_request(session_client, "GET", "/api/streams/webcam/diagnostics?camera_index=0", timeout=30)
+            result["diagnostics_after_retry"] = diagnostics
+            if not diagnostics.get("selected"):
+                result["start_error"] = last_start_error
+                return result
+            continue
+        raise AssertionError(
+            f"POST /api/streams/webcam/start expected 200, got {response.status_code}: {response.text[:400]}"
+        )
+    if start_payload is None:
+        result["start_error"] = last_start_error
+        return result
+    start = start_payload
     webcam_task_id = str(start["task_id"])
     metrics = None
     deadline = time.time() + 60
@@ -445,16 +512,16 @@ def main() -> int:
             batch = detect_batch_task(session_client)
             video = detect_video_task(session_client)
             history = verify_recent_history(session_client, [image["task_id"], batch["task_id"], video["task_id"]])
-            batch_export = export_batch_reports(session_client, [image["task_id"], batch["task_id"], video["task_id"]])
+            batch_export = export_batch_reports(session_client, [image, batch, video])
             webcam = verify_webcam_contract(session_client)
 
             summary.update(
                 {
                     "dashboard": dashboard,
                     "model_switch": model_switch,
-                    "image": image,
-                    "batch": batch,
-                    "video": video,
+                    "image": strip_internal_task_context(image),
+                    "batch": strip_internal_task_context(batch),
+                    "video": strip_internal_task_context(video),
                     "history": history,
                     "batch_export": batch_export,
                     "webcam": webcam,

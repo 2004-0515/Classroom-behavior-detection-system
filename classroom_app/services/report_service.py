@@ -233,6 +233,8 @@ class ReportService:
                 "duration": float(summary.get("duration") or 0.0),
                 "student_behavior_stats": summary.get("student_behavior_stats") or {},
                 "teacher_behavior_stats": summary.get("teacher_behavior_stats") or {},
+                "display_metrics": summary.get("display_metrics") or {},
+                "derived_metrics": summary.get("derived_metrics") or {},
             },
             "assets": asset_manifest,
         }
@@ -244,6 +246,8 @@ class ReportService:
         payload["student_behavior_stats"] = dict(payload.get("student_behavior_stats") or {})
         payload["teacher_behavior_stats"] = dict(payload.get("teacher_behavior_stats") or {})
         payload["assets"] = dict(payload.get("assets") or {})
+        payload["display_metrics"] = dict(payload.get("display_metrics") or {})
+        payload["derived_metrics"] = dict(payload.get("derived_metrics") or {})
         payload["total_detections"] = int(payload.get("total_detections") or 0)
         payload["average_confidence"] = float(payload.get("average_confidence") or 0.0)
         payload["duration"] = float(payload.get("duration") or 0.0)

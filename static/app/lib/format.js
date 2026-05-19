@@ -26,22 +26,43 @@ const MODE_BADGES = {
 const BEHAVIOR_LABELS = {
     read: "阅读",
     reading: "阅读",
+    book: "书本",
+    lookbook: "阅读",
+    bookreading: "阅读",
+    看书: "阅读",
+    读书: "阅读",
     write: "书写",
     writing: "书写",
+    写字: "书写",
     hand: "举手",
     handraising: "举手",
+    handraise: "举手",
+    raisehand: "举手",
+    raisinghand: "举手",
     head: "人头",
+    heads: "人头",
+    humanhead: "人头",
     bowhead: "低头",
     raisehead: "抬头",
     upright: "坐姿端正",
     inclusion: "专注听讲",
+    listen: "专注听讲",
+    listening: "专注听讲",
+    听讲: "专注听讲",
     sleep: "睡觉",
     usingphone: "使用手机",
-    phone: "手机",
+    using_phone: "使用手机",
+    phone: "使用手机",
+    玩手机: "使用手机",
     computer: "电脑",
-    book: "书本",
     patches: "课本区域",
     guidingstudents: "巡视指导",
+    guide: "巡视指导",
+    巡视: "巡视指导",
+    lecture: "讲课",
+    teaching: "讲课",
+    observe: "观察学生",
+    observation: "观察学生",
 };
 
 function normalizeLookupKey(value) {
@@ -78,11 +99,8 @@ function prettifyAsciiLabel(value) {
     const lookupKey = normalizeLookupKey(value);
     if (!slug) return "未命名";
     if (BEHAVIOR_LABELS[lookupKey]) return BEHAVIOR_LABELS[lookupKey];
-    const compact = slug
-        .replace(/\b(best|last|final|v\d+)\b/gi, "")
-        .replace(/\s+/g, " ")
-        .trim();
-    if (!compact) return "未命名";
+    if (/^(best|last|final)$/i.test(slug)) return `${toTitleWords(slug)} 检查点`;
+    const compact = slug.replace(/\bv(\d+)\b/gi, "v$1").replace(/\s+/g, " ").trim();
     return toTitleWords(compact);
 }
 

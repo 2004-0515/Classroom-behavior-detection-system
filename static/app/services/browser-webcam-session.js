@@ -52,22 +52,31 @@ export async function captureBrowserWebcamSessionFrame({
     const detectResponse = await request("/api/detect/frame", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: originalImage }),
+        body: JSON.stringify({ image: originalImage, tracking_session_id: session.taskId }),
     });
     const data = detectResponse.data;
     const detections = mergeDetections(data);
     session.latestOriginalImage = originalImage;
     session.latestAnnotatedImage = data.annotated_image;
     session.latestDetections = detections;
-    session.processedFrames += 1;
-    session.totalDetections += detections.length;
-    detections.forEach((item) => {
-        session.confidenceSum += Number(item.confidence || 0);
-        const bucket = item.source === "teacher" ? session.teacherCounts : session.studentCounts;
-        bucket[item.behavior] = (bucket[item.behavior] || 0) + 1;
-    });
+    session.latestSummary = data.summary || null;
+    if (session.latestSummary) {
+        session.processedFrames = Number(session.latestSummary.processed_frames || data.processed_frames || session.processedFrames || 0);
+        session.totalDetections = Number(session.latestSummary.total_detections || 0);
+        session.confidenceSum = Number(session.latestSummary.average_confidence || 0) * session.totalDetections;
+        session.studentCounts = { ...(session.latestSummary.student_behavior_stats || {}) };
+        session.teacherCounts = { ...(session.latestSummary.teacher_behavior_stats || {}) };
+    } else {
+        session.processedFrames += 1;
+        session.totalDetections += detections.length;
+        detections.forEach((item) => {
+            session.confidenceSum += Number(item.confidence || 0);
+            const bucket = item.source === "teacher" ? session.teacherCounts : session.studentCounts;
+            bucket[item.behavior] = (bucket[item.behavior] || 0) + 1;
+        });
+    }
 
-    const stats = getBrowserWebcamSessionStats(session);
+    const stats = session.latestSummary || getBrowserWebcamSessionStats(session);
     const taskPayload = buildBrowserWebcamTaskPayload(session, stats);
     return {
         stats,
@@ -127,6 +136,8 @@ export function resetBrowserWebcamSessionState(session) {
         latestOriginalImage: null,
         latestAnnotatedImage: null,
         latestDetections: [],
+        latestSummary: null,
+        capturePromise: null,
         timer: null,
         video: null,
         canvas: null,

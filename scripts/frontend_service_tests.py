@@ -8,7 +8,7 @@ from pathlib import Path
 from runtime_paths import NODE_FALLBACK, resolve_node
 
 ROOT = Path(__file__).resolve().parent.parent
-TEST_FILE = ROOT / "static" / "app" / "services" / "task-services.test.js"
+TEST_ROOT = ROOT / "static" / "app"
 
 
 # Fast regression entrypoint for frontend service-layer behavior.
@@ -22,8 +22,13 @@ def main() -> int:
     if not candidates:
         print(f"未找到可用 Node.js，可检查系统 PATH 或 bundled runtime: {NODE_FALLBACK}")
         return 1
-    if not TEST_FILE.exists():
-        print(f"未找到前端 service 测试文件: {TEST_FILE}")
+    test_files = sorted(
+        path
+        for path in TEST_ROOT.rglob("*.test.js")
+        if "node_modules" not in path.parts
+    )
+    if not test_files:
+        print(f"未找到前端测试文件: {TEST_ROOT}")
         return 1
 
     env = os.environ.copy()
@@ -31,7 +36,7 @@ def main() -> int:
     failures = []
     for node in candidates:
         try:
-            result = subprocess.run([str(node), "--test", str(TEST_FILE)], cwd=ROOT, env=env)
+            result = subprocess.run([str(node), "--test", *[str(path) for path in test_files]], cwd=ROOT, env=env)
         except OSError as exc:
             failures.append(f"{node}: {exc}")
             continue

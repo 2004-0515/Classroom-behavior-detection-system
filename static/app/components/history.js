@@ -18,6 +18,14 @@ export function renderHistoryList({
     onOpenTask,
     onToggleSelection,
 }) {
+    const getMetricLine = (task) => {
+        const summary = taskPayloadMap[task.task_id] || {};
+        const primary = summary.display_metrics?.primary_stat;
+        if (primary?.label) {
+            return `${primary.label} ${primary.formatted || primary.value || 0}`;
+        }
+        return `检测数 ${formatNumber(summary.total_detections ?? task.total_detections)}`;
+    };
     container.innerHTML = tasks.length ? tasks.map((task) => `
         <div class="history-item ${String(activeTaskId) === String(task.task_id) ? "active" : ""} ${selectedIds.has(String(task.task_id)) ? "is-selected" : ""}" data-task-id="${task.task_id}">
             <div class="history-select-row">
@@ -33,7 +41,7 @@ export function renderHistoryList({
             <div class="history-highlight">${buildTaskHighlight(task, taskPayloadMap[task.task_id])}</div>
             <div class="tag-row compact">${renderBehaviorTags(getTopBehaviors(taskPayloadMap[task.task_id], 2))}</div>
             <div class="history-meta">
-                <span>检测数 ${formatNumber(taskPayloadMap[task.task_id]?.total_detections ?? task.total_detections)}</span>
+                <span>${getMetricLine(task)}</span>
                 <span>${taskPayloadMap[task.task_id]?.duration ? `${formatNumber(taskPayloadMap[task.task_id].duration, 1)} 秒` : formatStatus(task.status)}</span>
             </div>
         </div>

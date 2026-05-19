@@ -131,6 +131,7 @@ def terminate_process(server: AuditServerProcess) -> None:
 def run_node_audit(
     node_bin: Path,
     *,
+    python_bin: Path,
     base_url: str,
     setup_base_url: str,
     artifact_dir: Path,
@@ -146,6 +147,7 @@ def run_node_audit(
     env["STRICT_AUDIT_OUTPUT_PATH"] = str(output_path)
     env["STRICT_AUDIT_ADMIN_USERNAME"] = admin_username
     env["STRICT_AUDIT_ADMIN_PASSWORD"] = admin_password
+    env["STRICT_AUDIT_PYTHON"] = str(python_bin)
     command = [
         str(node_bin),
         str(STATIC_APP / "scripts" / "strict-system-audit.cjs"),
@@ -232,6 +234,7 @@ def main() -> int:
     try:
         return run_node_audit(
             node_bin,
+            python_bin=python_bin,
             base_url=base_url,
             setup_base_url=setup_base_url,
             artifact_dir=ARTIFACT_DIR,

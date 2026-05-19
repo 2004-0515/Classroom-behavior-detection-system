@@ -60,7 +60,7 @@ function renderInspectorList({
                     <span>${state.visibility[index] ? "显示" : "隐藏"}</span>
                 </label>
             </div>
-            <small>${item.source === "teacher" ? "教师/人头模型" : "学生行为模型"}</small>
+            <small>${item.source === "teacher" ? "教师/人头模型" : "学生行为模型"}${item.track_id != null ? ` · 轨迹 #${item.track_id}` : ""}${item.track_hits ? ` · 命中 ${item.track_hits} 帧` : ""}</small>
             <span>${formatNumber(item.confidence * 100, 1)}%</span>
         </div>
     `).join("");

@@ -45,6 +45,14 @@ import {
     toggleHistorySelectionIds,
 } from "./lib/history.js";
 import {
+    closeDialogById,
+    focusDialogById,
+    getDialogCard as getDialogCardHelper,
+    getDialogFocusableElements as getDialogFocusableElementsHelper,
+    openDialogById,
+    trapDialogFocus as trapDialogFocusHelper,
+} from "./lib/dialogs.js";
+import {
     buildBrowserWebcamTaskPayload,
     getBrowserWebcamSessionStats,
     normalizeTaskPayload,
@@ -162,18 +170,11 @@ const browserWebcamSession = {
     latestOriginalImage: null,
     latestAnnotatedImage: null,
     latestDetections: [],
+    capturePromise: null,
     timer: null,
     video: null,
     canvas: null,
 };
-const DIALOG_FOCUSABLE_SELECTOR = [
-    "button:not([disabled])",
-    "[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    "[tabindex]:not([tabindex='-1'])",
-].join(", " );
 let activeDialogId = null;
 const dialogOpeners = new Map();
 
@@ -826,8 +827,10 @@ function showMedia(type, src) {
         els.resultImage.removeAttribute("src");
         els.resultVideo.classList.remove("hidden");
         els.resultVideo.src = src;
+        els.resultVideo.onerror = () => clearPreview("视频预览失败", "结果视频已生成，但当前浏览器无法直接播放，请检查转码结果。");
         els.resultVideo.load();
         els.resultVideo.onloadeddata = () => setPreviewLoading(false);
+        els.resultVideo.oncanplay = () => setPreviewLoading(false);
         return;
     }
     els.resultVideo.pause();
@@ -911,7 +914,9 @@ function populateModelSelects() {
     const buildOptions = (selectedPath) => ['<option value="">请选择模型</option>', ...models.map((model) => {
         const value = model.relative_path || model.filename;
         const selected = selectedPath && selectedPath.includes(value) ? "selected" : "";
-        return `<option value="${value}" ${selected}>${truncate(formatModelDetail(value), 28)}</option>`;
+        const label = model.display_name || formatModelDetail(value);
+        const suffix = model.is_duplicate_alias ? " · 重复入口" : "";
+        return `<option value="${value}" ${selected}>${truncate(`${label}${suffix}`, 28)}</option>`;
     })].join("");
     if (models.length) {
         els.studentModelSelect.innerHTML = buildOptions(modelInfo?.student?.path);
@@ -922,13 +927,13 @@ function populateModelSelects() {
     els.applyModelsBtn.disabled = studentLocked && teacherLocked;
     els.modelMeta.innerHTML = `
         <div>
-            <strong>${formatModelName(modelInfo?.student?.path, "student")}</strong>
-            <span>${truncate(formatModelDetail(modelInfo?.student?.path || "未加载"), 22)}</span>
+            <strong>${modelInfo?.student?.display_name || formatModelName(modelInfo?.student?.relative_path || modelInfo?.student?.path, "student")}</strong>
+            <span>${truncate(formatModelDetail(modelInfo?.student?.relative_path || modelInfo?.student?.path || "未加载"), 22)}</span>
             <small>${modelInfo?.student?.selection_source_label || "未记录来源"}${modelInfo?.student?.selection_locked ? " · 已锁定" : ""}</small>
         </div>
         <div>
-            <strong>${formatModelName(modelInfo?.teacher?.path, "teacher")}</strong>
-            <span>${truncate(formatModelDetail(modelInfo?.teacher?.path || "未加载"), 22)}</span>
+            <strong>${modelInfo?.teacher?.display_name || formatModelName(modelInfo?.teacher?.relative_path || modelInfo?.teacher?.path, "teacher")}</strong>
+            <span>${truncate(formatModelDetail(modelInfo?.teacher?.relative_path || modelInfo?.teacher?.path || "未加载"), 22)}</span>
             <small>${modelInfo?.teacher?.selection_source_label || "未记录来源"}${modelInfo?.teacher?.selection_locked ? " · 已锁定" : ""}</small>
         </div>
     `;
@@ -1516,48 +1521,64 @@ async function failBrowserWebcamSession(message) {
 }
 
 async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
-    try {
-        const frame = await captureBrowserWebcamSessionFrame({
-            session: browserWebcamSession,
-            request,
-            mergeDetections,
-            getBrowserWebcamSessionStats,
-            buildBrowserWebcamTaskPayload,
-        });
-        if (!frame) return null;
-        const { stats, taskPayload, annotatedImage, processedFrames } = frame;
-        setState({
-            activeTaskPayload: taskPayload,
-            currentTask: {
-                task_id: browserWebcamSession.taskId,
-                task_type: "webcam",
-                status: "processing",
-                file_name: "browser_camera",
-                processed_frames: browserWebcamSession.processedFrames,
-                total_frames: browserWebcamSession.processedFrames,
-            },
-        });
-        showMedia("image", annotatedImage);
-        els.videoMeta.innerHTML = `<span class="pill processing">浏览器直连中</span><span class="pill">当前帧 ${processedFrames}</span>`;
-        renderTaskPayload(taskPayload);
-        renderTaskState({
-            fps: stats.fps,
-            total_detections: stats.totalDetections,
-            processed_frames: stats.processedFrames,
-            total_frames: stats.processedFrames,
-            camera_index: "browser",
-            backend: "getUserMedia",
-            eta_seconds: null,
-        });
-        renderHistory();
-        renderActionButtons();
-        return frame;
-    } catch (error) {
-        await failBrowserWebcamSession(error.message);
-        if (!silentFailure) {
-            pushNotification(`浏览器摄像头采集失败: ${error.message}`, "danger");
+    if (browserWebcamSession.capturePromise) {
+        return browserWebcamSession.capturePromise;
+    }
+    const capturePromise = (async () => {
+        try {
+            const frame = await captureBrowserWebcamSessionFrame({
+                session: browserWebcamSession,
+                request,
+                mergeDetections,
+                getBrowserWebcamSessionStats,
+                buildBrowserWebcamTaskPayload,
+            });
+            if (!frame) return null;
+            const { stats, taskPayload, annotatedImage, processedFrames } = frame;
+            if (!browserWebcamSession.active) {
+                return frame;
+            }
+            setState({
+                activeTaskPayload: taskPayload,
+                currentTask: {
+                    task_id: browserWebcamSession.taskId,
+                    task_type: "webcam",
+                    status: "processing",
+                    file_name: "browser_camera",
+                    processed_frames: browserWebcamSession.processedFrames,
+                    total_frames: browserWebcamSession.processedFrames,
+                },
+            });
+            showMedia("image", annotatedImage);
+            els.videoMeta.innerHTML = `<span class="pill processing">浏览器直连中</span><span class="pill">当前帧 ${processedFrames}</span>`;
+            renderTaskPayload(taskPayload);
+            renderTaskState({
+                fps: stats.fps,
+                total_detections: stats.totalDetections,
+                processed_frames: stats.processedFrames,
+                total_frames: stats.processedFrames,
+                camera_index: "browser",
+                backend: "getUserMedia",
+                eta_seconds: null,
+            });
+            renderHistory();
+            renderActionButtons();
+            return frame;
+        } catch (error) {
+            await failBrowserWebcamSession(error.message);
+            if (!silentFailure) {
+                pushNotification(`浏览器摄像头采集失败: ${error.message}`, "danger");
+            }
+            throw error;
         }
-        throw error;
+    })();
+    browserWebcamSession.capturePromise = capturePromise;
+    try {
+        return await capturePromise;
+    } finally {
+        if (browserWebcamSession.capturePromise === capturePromise) {
+            browserWebcamSession.capturePromise = null;
+        }
     }
 }
 
@@ -1567,6 +1588,16 @@ async function stopBrowserWebcamFallback() {
     let noticeMessage = "浏览器摄像头会话已结束，可以从历史记录回看摘要。";
     let noticeLevel = "success";
     try {
+        clearInterval(browserWebcamSession.timer);
+        browserWebcamSession.timer = null;
+        browserWebcamSession.active = false;
+        if (browserWebcamSession.capturePromise) {
+            try {
+                await browserWebcamSession.capturePromise;
+            } catch (captureError) {
+                console.warn("browser webcam capture flush failed", captureError);
+            }
+        }
         await stopBrowserWebcamSession({
             session: browserWebcamSession,
             request,
@@ -1659,7 +1690,7 @@ function openCurrentModelDialog() {
         const item = modelInfo[type] || {};
         return `
             <article class="model-detail-card">
-                <strong>${formatModelName(item.path, type)}</strong>
+                <strong>${item.display_name || formatModelName(item.relative_path || item.path, type)}</strong>
                 <span>${truncate(item.path || "未加载", 52)}</span>
                 <small>来源：${item.selection_source_label || "未记录"}${item.selection_locked ? " · 已锁定" : ""}</small>
                 <small>状态：${item.loaded ? "已加载" : item.error || "未加载"}</small>
@@ -1672,24 +1703,52 @@ function openCurrentModelDialog() {
     openDialog("modelDetailsModal");
 }
 
+function renderModelLibraryItem(item, modelInfo) {
+    const isStudentCurrent = item.relative_path && item.relative_path === modelInfo.student?.relative_path;
+    const isTeacherCurrent = item.relative_path && item.relative_path === modelInfo.teacher?.relative_path;
+    const stateTags = [
+        isStudentCurrent ? `<span class="mini-tag tone-1"><strong>当前学生模型</strong></span>` : "",
+        isTeacherCurrent ? `<span class="mini-tag tone-2"><strong>当前教师模型</strong></span>` : "",
+        item.is_duplicate_alias ? `<span class="mini-tag muted"><strong>重复入口</strong></span>` : "",
+    ].filter(Boolean).join("");
+    return `
+        <article class="model-library-item">
+            <strong>${truncate(item.display_name || formatModelDetail(item.relative_path || item.filename), 32)}</strong>
+            <span>${truncate(item.relative_path || item.filename, 54)}</span>
+            <small>${item.error ? `读取失败：${item.error}` : `${item.num_classes || 0} 个类别 · ${item.file_size_mb || "--"} MB · ${item.source_detail || item.task || "detect"}`}</small>
+            ${item.duplicate_note ? `<small>${item.duplicate_note}</small>` : ""}
+            <div class="tag-row compact">${stateTags}${(item.classes || []).slice(0, 8).map((name, index) => `<span class="mini-tag tone-${(index % 4) + 1}"><strong>${formatBehaviorLabel(name)}</strong></span>`).join("") || `<span class="mini-tag muted">无类别信息</span>`}</div>
+            <div class="inline-actions model-library-actions">
+                <button class="ghost-btn model-pick-btn" type="button" data-role="student" data-model="${item.relative_path || item.filename}" ${modelInfo.student?.selection_locked ? "disabled" : ""}>设为学生模型</button>
+                <button class="ghost-btn model-pick-btn" type="button" data-role="teacher" data-model="${item.relative_path || item.filename}" ${modelInfo.teacher?.selection_locked ? "disabled" : ""}>设为教师模型</button>
+            </div>
+        </article>
+    `;
+}
+
+function buildModelLibrarySections(models, modelInfo) {
+    const groups = new Map();
+    models.forEach((item) => {
+        const key = item.source_group || "other";
+        const group = groups.get(key) || [];
+        group.push(item);
+        groups.set(key, group);
+    });
+    return [...groups.entries()].map(([key, items]) => `
+        <section class="model-library-group" data-group="${key}">
+            <div class="panel-title-row"><strong>${items[0]?.source_group_label || "候选模型"}</strong><span class="pill info">${items.length} 个</span></div>
+            <div class="model-library-group-list">${items.map((item) => renderModelLibraryItem(item, modelInfo)).join("")}</div>
+        </section>
+    `).join("");
+}
+
 async function openModelLibraryDialog() {
     if (!getState().models?.length) {
         await loadModels(true);
     }
     const models = getState().models || [];
     const modelInfo = getState().modelInfo || {};
-    els.modelLibraryContent.innerHTML = models.length ? models.map((item) => `
-        <article class="model-library-item">
-            <strong>${truncate(formatModelDetail(item.relative_path || item.filename), 32)}</strong>
-            <span>${truncate(item.relative_path || item.filename, 54)}</span>
-            <small>${item.error ? `读取失败：${item.error}` : `${item.num_classes || 0} 个类别 · ${item.file_size_mb || "--"} MB · ${item.task || "detect"}`}</small>
-            <div class="tag-row compact">${(item.classes || []).slice(0, 8).map((name, index) => `<span class="mini-tag tone-${(index % 4) + 1}"><strong>${formatBehaviorLabel(name)}</strong></span>`).join("") || `<span class="mini-tag muted">无类别信息</span>`}</div>
-            <div class="inline-actions model-library-actions">
-                <button class="ghost-btn model-pick-btn" type="button" data-role="student" data-model="${item.relative_path || item.filename}" ${modelInfo.student?.selection_locked ? "disabled" : ""}>设为学生模型</button>
-                <button class="ghost-btn model-pick-btn" type="button" data-role="teacher" data-model="${item.relative_path || item.filename}" ${modelInfo.teacher?.selection_locked ? "disabled" : ""}>设为教师模型</button>
-            </div>
-        </article>
-    `).join("") : `<div class="model-library-item">当前未扫描到候选模型</div>`;
+    els.modelLibraryContent.innerHTML = models.length ? buildModelLibrarySections(models, modelInfo) : `<div class="model-library-item">当前未扫描到候选模型</div>`;
     [...els.modelLibraryContent.querySelectorAll(".model-pick-btn")].forEach((node) => {
         node.addEventListener("click", () => pickModelFromLibrary(node.dataset.role, node.dataset.model));
     });
@@ -1710,42 +1769,19 @@ function pickModelFromLibrary(role, modelValue) {
 }
 
 function getDialogCard(id) {
-    return els[id]?.querySelector(".dialog-card") || null;
+    return getDialogCardHelper(els, id);
 }
 
 function getDialogFocusableElements(dialog) {
-    if (!dialog) return [];
-    return [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)].filter((node) => !node.hasAttribute("disabled") && !node.getAttribute("aria-hidden") && !node.classList.contains("hidden"));
+    return getDialogFocusableElementsHelper(dialog);
 }
 
 function focusDialog(id) {
-    const dialog = getDialogCard(id);
-    if (!dialog) return;
-    const [firstFocusable] = getDialogFocusableElements(dialog);
-    (firstFocusable || dialog).focus();
+    focusDialogById(els, id);
 }
 
 function trapDialogFocus(event, dialog) {
-    const focusable = getDialogFocusableElements(dialog);
-    if (!focusable.length) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!dialog.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-    }
-    if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-    } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-    }
+    trapDialogFocusHelper(event, dialog);
 }
 
 function handleDialogKeydown(event) {
@@ -1763,30 +1799,28 @@ function handleDialogKeydown(event) {
 }
 
 function openDialog(id) {
-    const node = els[id];
-    const dialog = getDialogCard(id);
-    if (!node || !dialog) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogOpeners.set(id, opener);
-    node.classList.remove("hidden");
-    node.setAttribute("aria-hidden", "false");
-    activeDialogId = id;
-    window.requestAnimationFrame(() => focusDialog(id));
+    openDialogById({
+        els,
+        id,
+        dialogOpeners,
+        getActiveElement: () => (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+        setActiveDialogId: (value) => {
+            activeDialogId = value;
+        },
+        requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
+    });
 }
 
 function closeDialog(id) {
-    const node = els[id];
-    if (!node) return;
-    node.classList.add("hidden");
-    node.setAttribute("aria-hidden", "true");
-    if (activeDialogId === id) {
-        activeDialogId = null;
-    }
-    const opener = dialogOpeners.get(id);
-    dialogOpeners.delete(id);
-    if (opener && typeof opener.focus === "function") {
-        opener.focus();
-    }
+    closeDialogById({
+        els,
+        id,
+        dialogOpeners,
+        getActiveDialogId: () => activeDialogId,
+        setActiveDialogId: (value) => {
+            activeDialogId = value;
+        },
+    });
 }
 
 // Keep formatting-aware wrappers local so shared helpers stay presentation-agnostic.

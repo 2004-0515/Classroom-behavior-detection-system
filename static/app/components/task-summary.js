@@ -2,7 +2,6 @@ export function renderTaskSummaryCards({
     node,
     summary,
     currentMode,
-    formatNumber,
     formatTaskType,
 }) {
     if (!summary) {
@@ -14,10 +13,20 @@ export function renderTaskSummaryCards({
         `;
         return;
     }
+    const cards = summary.display_metrics?.cards;
+    if (cards?.length) {
+        node.innerHTML = cards.slice(0, 4).map((item, index) => `
+            <div class="summary-card ${item.accent || index === 0 ? "accent" : ""}">
+                <span>${item.label}</span>
+                <strong>${item.formatted || "--"}</strong>
+            </div>
+        `).join("");
+        return;
+    }
     node.innerHTML = `
-        <div class="summary-card accent"><span>总检测数</span><strong>${formatNumber(summary.total_detections)}</strong></div>
-        <div class="summary-card"><span>平均置信度</span><strong>${formatNumber((summary.average_confidence || 0) * 100, 1)}%</strong></div>
-        <div class="summary-card"><span>处理时长</span><strong>${formatNumber(summary.duration || 0, 1)} 秒</strong></div>
+        <div class="summary-card accent"><span>总检测数</span><strong>${summary.total_detections || 0}</strong></div>
+        <div class="summary-card"><span>平均置信度</span><strong>${((summary.average_confidence || 0) * 100).toFixed(1)}%</strong></div>
+        <div class="summary-card"><span>处理时长</span><strong>${(summary.duration || 0).toFixed(1)} 秒</strong></div>
         <div class="summary-card"><span>任务类型</span><strong>${formatTaskType(summary.task_type || currentMode)}</strong></div>
     `;
 }
@@ -33,7 +42,7 @@ export function renderTaskVideoMeta({
     node.innerHTML = `
         <span class="pill ${summary.status || ""}">${formatStatus(summary.status || "completed")}</span>
         <span class="pill">文件：${truncate(formatFileLabel(summary.file_name), 16)}</span>
-        <span class="pill info">${formatSummaryTone(summary.total_detections)}</span>
+        <span class="pill info">${summary.display_metrics?.highlight?.tone_label || formatSummaryTone(summary.total_detections)}</span>
     `;
 }
 
@@ -79,27 +88,21 @@ export function renderAnalysisNarrativeBlock({
         `;
         return;
     }
-    const total = Number(summary.total_detections || 0);
-    const confidence = Number(summary.average_confidence || 0);
-    const duration = Number(summary.duration || 0);
-    const mode = summary.task_type || currentMode;
+    const narrative = summary.display_metrics?.narrative || {};
+    const highlight = summary.display_metrics?.highlight || {};
     const topBehaviors = getTopBehaviors(summary, 3);
-    const tone = total >= 20 ? "检测覆盖较高" : total >= 1 ? "已识别到有效目标" : "当前结果较少";
-    const confidenceTone = confidence >= 0.7 ? "结果稳定度较高" : confidence >= 0.4 ? "结果可用于展示" : "建议结合原图说明";
-    const durationTone = duration >= 60 ? "处理时长偏长，适合说明完整流程" : duration > 0 ? "处理节奏适合现场演示" : "等待任务完成后生成节奏信息";
-    const behaviorSentence = buildBehaviorNarrative(mode, topBehaviors, total);
-    const modeLead = getModeNarrativeLead(mode, total, confidence, duration);
+    const behaviorTags = renderBehaviorTags(topBehaviors);
     node.innerHTML = `
         <article class="narrative-card accent">
             <span>结论摘要</span>
-            <strong>${tone}</strong>
-            <small>${modeLead}</small>
-            <div class="tag-row">${renderBehaviorTags(topBehaviors)}</div>
+            <strong>${highlight.title || "检测摘要"}</strong>
+            <small>${narrative.lead || getModeNarrativeLead(summary.task_type || currentMode, Number(summary.total_detections || 0), Number(summary.average_confidence || 0), Number(summary.duration || 0))}</small>
+            <div class="tag-row">${behaviorTags}</div>
         </article>
         <article class="narrative-card">
             <span>展示建议</span>
-            <strong>${confidenceTone}</strong>
-            <small>${behaviorSentence} ${durationTone}</small>
+            <strong>${narrative.recommendation_title || "结果可用于展示"}</strong>
+            <small>${narrative.recommendation_text || buildBehaviorNarrative(summary.task_type || currentMode, topBehaviors, Number(summary.total_detections || 0))}</small>
         </article>
     `;
 }
@@ -135,14 +138,15 @@ export function renderSpeechTemplateBlock({
         `;
         return;
     }
+    const narrative = summary.display_metrics?.narrative || {};
     const mode = summary.task_type || currentMode;
     const total = Number(summary.total_detections || 0);
     const confidence = Number(summary.average_confidence || 0);
     const duration = Number(summary.duration || 0);
     const topBehaviors = getTopBehaviors(summary, 3);
-    const behaviorLine = topBehaviors.length ? `其中最主要的是 ${topBehaviors.map((item) => `${item.label}${formatNumber(item.value)}次`).join("、")}。` : "当前行为分布还不够集中。";
-    const shortSpeech = `${getModeNarrativeLead(mode, total, confidence, duration)} ${behaviorLine}`;
-    const longSpeech = `${getModeNarrativeLead(mode, total, confidence, duration)} ${behaviorLine} ${buildBehaviorNarrative(mode, topBehaviors, total)}`;
+    const behaviorLine = topBehaviors.length ? `其中最主要的是 ${topBehaviors.map((item) => item.formatted ? `${item.label}${item.formatted}` : `${item.label}${formatNumber(item.value)}次`).join("、")}。` : "当前行为分布还不够集中。";
+    const shortSpeech = narrative.short_speech || `${getModeNarrativeLead(mode, total, confidence, duration)} ${behaviorLine}`;
+    const longSpeech = narrative.long_speech || `${getModeNarrativeLead(mode, total, confidence, duration)} ${behaviorLine} ${buildBehaviorNarrative(mode, topBehaviors, total)}`;
     node.innerHTML = `
         <div class="speech-grid">
             <article class="speech-card"><span>30 秒版</span><p>${shortSpeech}</p></article>

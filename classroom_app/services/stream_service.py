@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 import cv2
 
 from classroom_app.core.errors import StreamError
+from classroom_app.core.summary_metrics import SummaryAccumulator
 from config import Config
 
 
@@ -47,6 +48,8 @@ class StreamService:
             "confidence_sum": 0.0,
             "student_behavior_stats": {},
             "teacher_behavior_stats": {},
+            "display_metrics": {},
+            "derived_metrics": {},
             "last_error": None,
         }
         self.latest_original_frame = None
@@ -56,6 +59,8 @@ class StreamService:
         self._lock = threading.Lock()
         self._webcam_ready_event = threading.Event()
         self._webcam_failure_event = threading.Event()
+        self._webcam_tracking_runtime = None
+        self._webcam_accumulator = None
 
     def start_webcam(self, camera_index, confidence, iou):
         if self.webcam_state["running"]:
@@ -78,6 +83,8 @@ class StreamService:
 
         self.model_service.update_parameters(confidence=confidence, iou=iou)
         self.model_service.get_detector().reset_stats()
+        self._webcam_tracking_runtime = self.model_service.get_detector().create_tracking_runtime()
+        self._webcam_accumulator = SummaryAccumulator("webcam")
         task_id = str(uuid.uuid4())
         self.task_service.create_task(task_id, "webcam", f"camera_{selected['index']}")
         self._webcam_ready_event.clear()
@@ -96,6 +103,8 @@ class StreamService:
                 "confidence_sum": 0.0,
                 "student_behavior_stats": {},
                 "teacher_behavior_stats": {},
+                "display_metrics": {},
+                "derived_metrics": {},
                 "last_error": None,
             }
         )
@@ -179,13 +188,11 @@ class StreamService:
                 with self._lock:
                     self.latest_original_frame = frame.copy()
 
-                results = detector.detect_image(frame)
+                results = self._webcam_tracking_runtime.detect_image(frame) if self._webcam_tracking_runtime else detector.detect_image(frame)
                 for det in results["student_detections"]:
                     detector.recent_student_behaviors.append(det["behavior"])
-                    self.webcam_state["student_behavior_stats"][det["behavior"]] = self.webcam_state["student_behavior_stats"].get(det["behavior"], 0) + 1
                 for det in results["teacher_detections"]:
                     detector.recent_teacher_behaviors.append(det["behavior"])
-                    self.webcam_state["teacher_behavior_stats"][det["behavior"]] = self.webcam_state["teacher_behavior_stats"].get(det["behavior"], 0) + 1
                 current_frame_index = self.webcam_state["frame_count"] + 1
                 timestamp = max(0.0, time.time() - (self.webcam_state["started_at"] or time.time()))
                 self.task_service.save_student_detections_bulk(
@@ -200,10 +207,12 @@ class StreamService:
                     timestamp,
                     results["teacher_detections"],
                 )
-                detection_count = len(results["student_detections"]) + len(results["teacher_detections"])
-                confidence_sum = sum(det["confidence"] for det in results["student_detections"]) + sum(
-                    det["confidence"] for det in results["teacher_detections"]
-                )
+                if self._webcam_accumulator:
+                    self._webcam_accumulator.update_frame(
+                        current_frame_index,
+                        student_detections=results["student_detections"],
+                        teacher_detections=results["teacher_detections"],
+                    )
 
                 encoded, buffer = cv2.imencode(".jpg", results["annotated_image"])
                 if not encoded:
@@ -214,8 +223,18 @@ class StreamService:
                     self.latest_frame_id += 1
                     self.webcam_state["frame_count"] += 1
                     self.webcam_state["processed_frames"] += 1
-                    self.webcam_state["total_detections"] += detection_count
-                    self.webcam_state["confidence_sum"] += confidence_sum
+                    if self._webcam_accumulator:
+                        summary = self._webcam_accumulator.build_payload(
+                            processed_frames=self.webcam_state["processed_frames"],
+                            total_frames=self.webcam_state["frame_count"],
+                            duration=timestamp,
+                        )
+                        self.webcam_state["student_behavior_stats"] = summary["student_behavior_stats"]
+                        self.webcam_state["teacher_behavior_stats"] = summary["teacher_behavior_stats"]
+                        self.webcam_state["total_detections"] = summary["total_detections"]
+                        self.webcam_state["confidence_sum"] = summary["average_confidence"] * summary["total_detections"]
+                        self.webcam_state["display_metrics"] = summary["display_metrics"]
+                        self.webcam_state["derived_metrics"] = summary["derived_metrics"]
                 if not self._webcam_ready_event.is_set():
                     self._webcam_ready_event.set()
         finally:
@@ -261,6 +280,8 @@ class StreamService:
             "total_detections": stats.get("total_detections"),
             "processed_frames": self.webcam_state["processed_frames"],
             "total_frames": self.webcam_state["frame_count"],
+            "display_metrics": self.webcam_state.get("display_metrics") or {},
+            "derived_metrics": self.webcam_state.get("derived_metrics") or {},
             "camera_index": stats.get("camera_index"),
             "backend": stats.get("backend"),
             "last_error": stats.get("last_error"),
@@ -291,26 +312,30 @@ class StreamService:
 
         camera_index = int(self.webcam_state.get("camera_index", 0) or 0)
         frame_count = int(self.webcam_state.get("frame_count", 0) or 0)
-        total_detections = int(self.webcam_state.get("total_detections", 0) or 0)
-        confidence_sum = float(self.webcam_state.get("confidence_sum", 0.0) or 0.0)
         started_at = self.webcam_state.get("started_at") or time.time()
         duration = max(0.0, time.time() - started_at)
-        average_confidence = (confidence_sum / total_detections) if total_detections else 0.0
-        student_stats = dict(self.webcam_state.get("student_behavior_stats") or {})
-        teacher_stats = dict(self.webcam_state.get("teacher_behavior_stats") or {})
+        summary = self._webcam_accumulator.build_payload(
+            processed_frames=frame_count,
+            total_frames=frame_count,
+            duration=duration,
+        ) if self._webcam_accumulator else {
+            "student_behavior_stats": dict(self.webcam_state.get("student_behavior_stats") or {}),
+            "teacher_behavior_stats": dict(self.webcam_state.get("teacher_behavior_stats") or {}),
+            "total_detections": int(self.webcam_state.get("total_detections", 0) or 0),
+            "average_confidence": (
+                float(self.webcam_state.get("confidence_sum", 0.0) or 0.0) / float(self.webcam_state.get("total_detections", 0) or 1)
+                if self.webcam_state.get("total_detections") else 0.0
+            ),
+            "duration": duration,
+            "display_metrics": dict(self.webcam_state.get("display_metrics") or {}),
+            "derived_metrics": dict(self.webcam_state.get("derived_metrics") or {}),
+        }
 
         if error_message:
             self.webcam_state["last_error"] = error_message
 
         self._persist_latest_webcam_assets(task_id, camera_index)
-        self.task_service.save_summary(
-            task_id,
-            student_stats,
-            teacher_stats,
-            total_detections,
-            average_confidence,
-            duration,
-        )
+        self.task_service.save_summary(task_id, **summary)
         self.task_service.update_status(task_id, status, frame_count, frame_count)
         log_payload = {
             "task_id": task_id,
@@ -318,7 +343,7 @@ class StreamService:
             "file_name": f"camera_{camera_index}",
             "status": status,
             "processed_frames": frame_count,
-            "total_detections": total_detections,
+            "total_detections": summary.get("total_detections", 0),
             "duration": round(duration, 3),
         }
         if error_message:
@@ -334,7 +359,11 @@ class StreamService:
             "confidence_sum": 0.0,
             "student_behavior_stats": {},
             "teacher_behavior_stats": {},
+            "display_metrics": {},
+            "derived_metrics": {},
         })
+        self._webcam_tracking_runtime = None
+        self._webcam_accumulator = None
         return task_id
 
     def diagnose_webcam(self, preferred_index: int = 0) -> Dict[str, Any]:

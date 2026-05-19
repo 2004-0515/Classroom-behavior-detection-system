@@ -87,7 +87,7 @@ def detect_video():
 def detect_frame():
     data = request.get_json(silent=True) or {}
     try:
-        result = _services().orchestrator.detect_frame_payload(data.get("image"))
+        result = _services().orchestrator.detect_frame_payload(data.get("image"), tracking_session_id=data.get("tracking_session_id"))
         return api_success(result, "帧检测完成")
     except AppError as exc:
         return api_error_from_exception(exc)

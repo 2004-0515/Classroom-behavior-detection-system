@@ -38,6 +38,12 @@ jobs:
         working-directory: static/app
         run: npm ci --no-fund --no-audit
 
+      - name: Install ffmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version
+
       - name: Run full acceptance chain
         env:
           PYTHONUTF8: '1'

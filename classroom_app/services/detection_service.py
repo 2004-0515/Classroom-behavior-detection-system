@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -14,7 +16,9 @@ import numpy as np
 from werkzeug.utils import secure_filename
 
 from classroom_app.core.errors import InputError, MediaError, TaskExecutionError
+from classroom_app.core.summary_metrics import SummaryAccumulator, build_summary_payload
 from config import Config
+from scripts.runtime_paths import resolve_ffmpeg
 
 
 class DetectionService:
@@ -24,6 +28,9 @@ class DetectionService:
         self.config_service = config_service
         self.session_manager = session_manager
         self.logger = logging.getLogger(__name__)
+        self.ffmpeg_path = resolve_ffmpeg()
+        self._browser_tracking_sessions = {}
+        self._browser_tracking_lock = threading.Lock()
 
     def allowed_file(self, filename):
         return "." in filename and filename.rsplit(".", 1)[1].lower() in Config.ALLOWED_EXTENSIONS
@@ -61,7 +68,16 @@ class DetectionService:
         self.task_service.save_task_asset(task_id, "result", output_filename, media_type="image", file_name=filename)
 
         self._persist_detections(task_id, 0, 0.0, results)
-        summary = self._build_summary_payload(results, duration=0.0)
+        summary = build_summary_payload(
+            task_type="image",
+            student_behavior_stats=results["student_behavior_counts"],
+            teacher_behavior_stats=results["teacher_behavior_counts"],
+            total_detections=len(results["student_detections"]) + len(results["teacher_detections"]),
+            average_confidence=self._compute_average_confidence(results),
+            duration=0.0,
+            processed_frames=1,
+            total_frames=1,
+        )
         self.task_service.save_summary(task_id, **summary)
         self.task_service.update_status(task_id, "completed", 1, 1)
         self._log_task_event(task_id, "image", filename, "completed", processed_frames=1, total_detections=summary["total_detections"], duration=0.0)
@@ -113,13 +129,16 @@ class DetectionService:
                 confidence_sum += item["confidence"]
                 total_detections += 1
 
-        summary = {
-            "student_behavior_stats": dict(total_student_counts),
-            "teacher_behavior_stats": dict(total_teacher_counts),
-            "total_detections": total_detections,
-            "average_confidence": (confidence_sum / total_detections) if total_detections else 0.0,
-            "duration": 0.0,
-        }
+        summary = build_summary_payload(
+            task_type="batch",
+            student_behavior_stats=dict(total_student_counts),
+            teacher_behavior_stats=dict(total_teacher_counts),
+            total_detections=total_detections,
+            average_confidence=(confidence_sum / total_detections) if total_detections else 0.0,
+            duration=0.0,
+            processed_frames=len(valid_files),
+            total_frames=len(valid_files),
+        )
         self.task_service.save_summary(task_id, **summary)
         self.task_service.update_status(task_id, "completed", len(valid_files), len(valid_files))
         self._log_task_event(task_id, "batch", f"{len(valid_files)} images", "completed", processed_frames=len(valid_files), total_detections=summary["total_detections"], duration=0.0)
@@ -170,16 +189,14 @@ class DetectionService:
         }
 
     def _process_video_task(self, task_id, session, frame_skip):
-        detector = self.model_service.get_detector()
+        tracking_runtime = self.model_service.get_detector().create_tracking_runtime()
         cap = None
         writer = None
-        student_stats = defaultdict(int)
-        teacher_stats = defaultdict(int)
-        confidence_sum = 0.0
-        total_detection_count = 0
+        accumulator = SummaryAccumulator("video")
         start_time = time.time()
         frame_index = 0
         processed_frames = 0
+        raw_output_path = str(Path(session.output_path).with_suffix(".tracking.mp4"))
 
         try:
             cap = cv2.VideoCapture(session.input_path)
@@ -190,7 +207,7 @@ class DetectionService:
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            writer = cv2.VideoWriter(session.output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+            writer = cv2.VideoWriter(raw_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
             session.stats["total_frames"] = total_frames
 
             while True:
@@ -207,23 +224,17 @@ class DetectionService:
                     writer.write(frame)
                     continue
 
-                results = detector.detect_image(frame)
+                results = tracking_runtime.detect_image(frame)
                 self._persist_detections(task_id, frame_index, frame_index / fps if fps else 0.0, results)
                 processed_frames += 1
-
-                for det in results["student_detections"]:
-                    student_stats[det["behavior"]] += 1
-                    confidence_sum += det["confidence"]
-                    total_detection_count += 1
-                for det in results["teacher_detections"]:
-                    teacher_stats[det["behavior"]] += 1
-                    confidence_sum += det["confidence"]
-                    total_detection_count += 1
+                accumulator.update_frame(
+                    frame_index,
+                    student_detections=results["student_detections"],
+                    teacher_detections=results["teacher_detections"],
+                )
 
                 annotated = results["annotated_image"]
                 writer.write(annotated)
-                if processed_frames == 1:
-                    self.task_service.save_task_asset(task_id, "result", session.output_filename, media_type="video", file_name=session.filename)
 
                 encoded, buffer = cv2.imencode(".jpg", annotated)
                 if encoded:
@@ -239,19 +250,28 @@ class DetectionService:
                 session.stats["fps"] = processed_frames / elapsed
                 remaining = max(0, total_frames - frame_index)
                 session.stats["eta_seconds"] = remaining / session.stats["fps"] if session.stats["fps"] else None
-                session.stats["total_detections"] = total_detection_count
+                session.stats.update(
+                    accumulator.build_payload(
+                        processed_frames=processed_frames,
+                        total_frames=total_frames,
+                        duration=elapsed,
+                    )
+                )
 
             duration = time.time() - start_time
-            summary = {
-                "student_behavior_stats": dict(student_stats),
-                "teacher_behavior_stats": dict(teacher_stats),
-                "total_detections": total_detection_count,
-                "average_confidence": (confidence_sum / total_detection_count) if total_detection_count else 0.0,
-                "duration": duration,
-            }
+            summary = accumulator.build_payload(
+                processed_frames=processed_frames,
+                total_frames=total_frames,
+                duration=duration,
+            )
             session.stats.update(summary)
             session.stats["fps"] = processed_frames / duration if duration > 0 else 0.0
             session.stats["eta_seconds"] = 0.0 if not session.stop_event.is_set() else None
+            if writer is not None:
+                writer.release()
+                writer = None
+            self._finalize_video_output(raw_output_path, session.output_path)
+            self.task_service.save_task_asset(task_id, "result", session.output_filename, media_type="video", file_name=session.filename)
             self.task_service.save_summary(task_id, **summary)
             final_status = Config.VIDEO_STOP_STATUS if session.stop_event.is_set() else "completed"
             self.task_service.update_status(
@@ -264,12 +284,17 @@ class DetectionService:
         except Exception as exc:
             self.logger.exception("video_task_failed task_id=%s file=%s", task_id, session.filename)
             self.task_service.update_status(task_id, "failed", processed_frames, session.stats.get("total_frames", 0))
-            self._log_task_event(task_id, "video", session.filename, "failed", processed_frames=processed_frames, total_detections=total_detection_count, duration=time.time() - start_time, error=str(exc))
+            self._log_task_event(task_id, "video", session.filename, "failed", processed_frames=processed_frames, total_detections=session.stats.get("total_detections", 0), duration=time.time() - start_time, error=str(exc))
         finally:
             if cap is not None:
                 cap.release()
             if writer is not None:
                 writer.release()
+            if Path(raw_output_path).exists() and Path(raw_output_path) != Path(session.output_path):
+                try:
+                    Path(raw_output_path).unlink()
+                except OSError:
+                    pass
             session.done_event.set()
 
     def stop_video_task(self, task_id):
@@ -300,6 +325,8 @@ class DetectionService:
             "total_detections": summary.get("total_detections", 0),
             "average_confidence": summary.get("average_confidence", 0.0),
             "duration": summary.get("duration", 0.0),
+            "display_metrics": summary.get("display_metrics") or {},
+            "derived_metrics": summary.get("derived_metrics") or {},
             "fps": 0.0,
             "eta_seconds": 0.0 if status == "completed" else None,
             "stopped": status == Config.VIDEO_STOP_STATUS,
@@ -329,7 +356,24 @@ class DetectionService:
             raise MediaError("无法读取帧", code="video_frame_read_failed", status=500)
         return self._encode_image_data(frame)
 
-    def detect_frame_payload(self, image_data):
+    def create_browser_tracking_session(self, task_id: str):
+        with self._browser_tracking_lock:
+            self._browser_tracking_sessions[task_id] = {
+                "runtime": self.model_service.get_detector().create_tracking_runtime(),
+                "accumulator": SummaryAccumulator("webcam"),
+                "started_at": time.time(),
+                "processed_frames": 0,
+            }
+
+    def pop_browser_tracking_session(self, task_id: str):
+        with self._browser_tracking_lock:
+            return self._browser_tracking_sessions.pop(task_id, None)
+
+    def get_browser_tracking_session(self, task_id: str):
+        with self._browser_tracking_lock:
+            return self._browser_tracking_sessions.get(task_id)
+
+    def detect_frame_payload(self, image_data, tracking_session_id=None):
         if not image_data:
             raise InputError("缺少image字段", code="missing_image")
         if "," in image_data:
@@ -340,14 +384,48 @@ class DetectionService:
         if image is None:
             raise MediaError("无法解析图片", code="image_decode_failed")
 
-        result = self.model_service.get_detector().detect_image(image)
-        return {
+        if tracking_session_id:
+            session = self.get_browser_tracking_session(str(tracking_session_id))
+            if not session:
+                raise TaskExecutionError("浏览器摄像头跟踪会话不存在或已结束", code="task_not_found", status=404)
+            result = session["runtime"].detect_image(image)
+            session["processed_frames"] += 1
+            frame_number = int(session["processed_frames"])
+            elapsed = max(0.0, time.time() - float(session["started_at"] or time.time()))
+            self._persist_detections(str(tracking_session_id), frame_number, elapsed, result)
+            session["accumulator"].update_frame(
+                frame_number,
+                student_detections=result["student_detections"],
+                teacher_detections=result["teacher_detections"],
+            )
+            summary = session["accumulator"].build_payload(
+                processed_frames=frame_number,
+                total_frames=frame_number,
+                duration=elapsed,
+            )
+            summary.update(
+                {
+                    "task_id": str(tracking_session_id),
+                    "task_type": "webcam",
+                    "status": "processing",
+                    "file_name": "browser_camera",
+                }
+            )
+            payload = {
+                "summary": summary,
+                "processed_frames": frame_number,
+            }
+        else:
+            result = self.model_service.get_detector().detect_image(image)
+            payload = {}
+        payload.update({
             "annotated_image": self._encode_image_data(result["annotated_image"]),
             "student_detections": result["student_detections"],
             "teacher_detections": result["teacher_detections"],
             "student_behavior_counts": result["student_behavior_counts"],
             "teacher_behavior_counts": result["teacher_behavior_counts"],
-        }
+        })
+        return payload
 
     def _encode_image_data(self, image):
         ok, buffer = cv2.imencode(".jpg", image)
@@ -378,17 +456,50 @@ class DetectionService:
         }
 
     @staticmethod
-    def _build_summary_payload(results, duration):
-        confidences = [item["confidence"] for item in results["student_detections"]] + [
-            item["confidence"] for item in results["teacher_detections"]
-        ]
-        return {
-            "student_behavior_stats": results["student_behavior_counts"],
-            "teacher_behavior_stats": results["teacher_behavior_counts"],
-            "total_detections": len(confidences),
-            "average_confidence": float(np.mean(confidences)) if confidences else 0.0,
-            "duration": duration,
-        }
+    def _compute_average_confidence(results):
+        confidences = [item["confidence"] for item in results["student_detections"]] + [item["confidence"] for item in results["teacher_detections"]]
+        return float(np.mean(confidences)) if confidences else 0.0
+
+    def _finalize_video_output(self, raw_output_path: str, final_output_path: str):
+        raw_path = Path(raw_output_path)
+        final_path = Path(final_output_path)
+        if not raw_path.exists():
+            raise TaskExecutionError("视频处理中间产物不存在", code="video_output_missing", status=500)
+        if final_path.exists():
+            final_path.unlink()
+        if self.ffmpeg_path:
+            command = [
+                str(self.ffmpeg_path),
+                "-y",
+                "-i",
+                str(raw_path),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-an",
+                str(final_path),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if result.returncode != 0:
+                raise TaskExecutionError(
+                    f"视频转码失败: {result.stderr.strip() or result.stdout.strip() or '未知错误'}",
+                    code="video_transcode_failed",
+                    status=500,
+                )
+        else:
+            raw_path.replace(final_path)
+        probe = cv2.VideoCapture(str(final_path))
+        opened = probe.isOpened()
+        frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(probe.get(cv2.CAP_PROP_FPS) or 0.0)
+        probe.release()
+        if not opened or frame_count <= 0 or fps <= 0:
+            raise TaskExecutionError("结果视频元数据无效，无法用于浏览器预览", code="video_output_invalid", status=500)
+        if raw_path.exists() and raw_path != final_path:
+            raw_path.unlink(missing_ok=True)
 
     def _log_task_event(self, task_id, mode, file_name, status, *, processed_frames, total_detections, duration, error=None):
         payload = {

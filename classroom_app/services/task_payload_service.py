@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from classroom_app.core.summary_metrics import build_summary_payload
 
 class TaskPayloadService:
     def __init__(self, task_service, detection_service, stream_service):
@@ -48,6 +49,22 @@ class TaskPayloadService:
         payload["duration"] = float(payload.get("duration") or 0.0)
         payload["processed_frames"] = int(payload.get("processed_frames") or 0)
         payload["total_frames"] = int(payload.get("total_frames") or 0)
+        payload["display_metrics"] = dict(payload.get("display_metrics") or {})
+        payload["derived_metrics"] = dict(payload.get("derived_metrics") or {})
+        if not payload["display_metrics"]:
+            normalized = build_summary_payload(
+                task_type=payload.get("task_type") or "",
+                student_behavior_stats=payload["student_behavior_stats"],
+                teacher_behavior_stats=payload["teacher_behavior_stats"],
+                total_detections=payload["total_detections"],
+                average_confidence=payload["average_confidence"],
+                duration=payload["duration"],
+                processed_frames=payload["processed_frames"],
+                total_frames=payload["total_frames"],
+                derived_metrics=payload["derived_metrics"] or None,
+            )
+            payload["display_metrics"] = normalized["display_metrics"]
+            payload["derived_metrics"] = normalized["derived_metrics"]
         return payload
 
     def _resolve_live_metrics(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -80,6 +97,8 @@ class TaskPayloadService:
             "total_detections",
             "average_confidence",
             "duration",
+            "display_metrics",
+            "derived_metrics",
             "fps",
             "eta_seconds",
             "camera_index",

@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 import json
 
+from classroom_app.core.behavior_labels import format_behavior_label, format_behavior_stats
+from classroom_app.core.summary_metrics import build_summary_payload
+
 
 class ReportGenerator:
     """检测报告生成器"""
@@ -12,18 +15,41 @@ class ReportGenerator:
     @staticmethod
     def generate_html_report(task_info: Dict[str, Any], output_path: str):
         """生成HTML格式的详细报告"""
-        student_stats = ReportGenerator._coerce_stats(task_info.get("student_behavior_stats", {}))
-        teacher_stats = ReportGenerator._coerce_stats(task_info.get("teacher_behavior_stats", {}))
-        combined_behaviors = ReportGenerator._get_top_behaviors(student_stats, teacher_stats, 4)
-        student_total = sum(student_stats.values())
-        teacher_total = sum(teacher_stats.values())
+        student_stats = format_behavior_stats(ReportGenerator._coerce_stats(task_info.get("student_behavior_stats", {})))
+        teacher_stats = format_behavior_stats(ReportGenerator._coerce_stats(task_info.get("teacher_behavior_stats", {})))
         total = int(task_info.get("total_detections", 0) or 0)
         avg_conf = float(task_info.get("average_confidence", 0) or 0) * 100
         duration = float(task_info.get("duration", 0) or 0)
         mode = task_info.get("task_type", "unknown")
+        summary_payload = build_summary_payload(
+            task_type=mode,
+            student_behavior_stats=student_stats,
+            teacher_behavior_stats=teacher_stats,
+            total_detections=total,
+            average_confidence=float(task_info.get("average_confidence", 0) or 0),
+            duration=duration,
+            processed_frames=int(task_info.get("processed_frames", 0) or 0),
+            total_frames=int(task_info.get("total_frames", 0) or 0),
+            derived_metrics=ReportGenerator._coerce_object(task_info.get("derived_metrics")) or None,
+        )
+        display_metrics = ReportGenerator._coerce_object(task_info.get("display_metrics")) or summary_payload["display_metrics"]
+        combined_behaviors = display_metrics.get("top_behaviors") or ReportGenerator._get_top_behaviors(student_stats, teacher_stats, 4)
+        student_chart_stats = format_behavior_stats(display_metrics.get("behavior_charts", {}).get("student") or student_stats)
+        teacher_chart_stats = format_behavior_stats(display_metrics.get("behavior_charts", {}).get("teacher") or teacher_stats)
+        student_total = sum(student_chart_stats.values())
+        teacher_total = sum(teacher_chart_stats.values())
         preview_html = ReportGenerator._build_preview(task_info)
-        narrative = ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)
-        speeches = ReportGenerator._build_speeches(mode, total, avg_conf, duration, combined_behaviors)
+        narrative = {
+            "mode_intro": display_metrics.get("narrative", {}).get("lead") or ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)["mode_intro"],
+            "title": display_metrics.get("highlight", {}).get("title") or ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)["title"],
+            "text": display_metrics.get("highlight", {}).get("text") or ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)["text"],
+            "recommend_title": display_metrics.get("narrative", {}).get("recommendation_title") or ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)["recommend_title"],
+            "recommend_text": display_metrics.get("narrative", {}).get("recommendation_text") or ReportGenerator._build_narrative(mode, total, avg_conf, duration, combined_behaviors)["recommend_text"],
+        }
+        speeches = {
+            "short": display_metrics.get("narrative", {}).get("short_speech") or ReportGenerator._build_speeches(mode, total, avg_conf, duration, combined_behaviors)["short"],
+            "long": display_metrics.get("narrative", {}).get("long_speech") or ReportGenerator._build_speeches(mode, total, avg_conf, duration, combined_behaviors)["long"],
+        }
 
         html_template = """
 <!DOCTYPE html>
@@ -399,12 +425,7 @@ class ReportGenerator:
             <div class="preview-box">{preview_html}</div>
         </section>
 
-        <section class="grid-4">
-            <article class="metric-card accent"><span>总检测数</span><strong>{total_detections}</strong></article>
-            <article class="metric-card"><span>平均置信度</span><strong>{avg_confidence}%</strong></article>
-            <article class="metric-card"><span>处理时长</span><strong>{duration} 秒</strong></article>
-            <article class="metric-card"><span>任务类型</span><strong>{task_type}</strong></article>
-        </section>
+        <section class="grid-4">{metric_cards}</section>
 
         <section class="analysis-grid">
             <article class="narrative-card accent">
@@ -489,6 +510,7 @@ class ReportGenerator:
             total_detections=total,
             avg_confidence=f"{avg_conf:.1f}",
             duration=f"{duration:.1f}",
+            metric_cards=ReportGenerator._render_metric_cards(display_metrics.get("cards") or []),
             mode_intro=escape(narrative["mode_intro"]),
             status_text=escape(ReportGenerator._get_status_text(task_info.get("status", "completed"))),
             preview_html=preview_html,
@@ -499,11 +521,11 @@ class ReportGenerator:
             top_behavior_tags=ReportGenerator._render_tags(combined_behaviors),
             speech_short=escape(speeches["short"]),
             speech_long=escape(speeches["long"]),
-            student_tags=ReportGenerator._render_tags(ReportGenerator._rank_single_group(student_stats, 3)),
-            teacher_tags=ReportGenerator._render_tags(ReportGenerator._rank_single_group(teacher_stats, 3)),
-            student_behavior_content=ReportGenerator._generate_behavior_table(student_stats, student_total),
-            teacher_behavior_content=ReportGenerator._generate_behavior_table(teacher_stats, teacher_total),
-            recommendations=ReportGenerator._generate_recommendations(student_stats, teacher_stats),
+            student_tags=ReportGenerator._render_tags(ReportGenerator._rank_single_group(student_chart_stats, 3)),
+            teacher_tags=ReportGenerator._render_tags(ReportGenerator._rank_single_group(teacher_chart_stats, 3)),
+            student_behavior_content=ReportGenerator._generate_behavior_table(student_chart_stats, student_total, display_metrics.get("metric_mode")),
+            teacher_behavior_content=ReportGenerator._generate_behavior_table(teacher_chart_stats, teacher_total, display_metrics.get("metric_mode")),
+            recommendations=ReportGenerator._generate_recommendations(student_chart_stats, teacher_chart_stats),
         )
 
         with open(output_path, "w", encoding="utf-8") as f:
@@ -513,35 +535,26 @@ class ReportGenerator:
     @staticmethod
     def _coerce_stats(raw: Any) -> Dict[str, int]:
         if isinstance(raw, str):
-            raw = json.loads(raw)
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = {}
         return {str(key): int(value or 0) for key, value in (raw or {}).items()}
 
     @staticmethod
-    def _format_behavior_label(label: str) -> str:
-        mapping = {
-            "head": "人头",
-            "heads": "人头",
-            "raise_hand": "举手",
-            "hand-raising": "举手",
-            "hand_raise": "举手",
-            "read": "阅读",
-            "reading": "阅读",
-            "write": "写字",
-            "writing": "写字",
-            "listen": "听讲",
-            "listening": "听讲",
-            "phone": "玩手机",
-            "using_phone": "玩手机",
-        }
-        if label in mapping:
-            return mapping[label]
-        return label.replace("_", " ").replace("-", " ")
+    def _coerce_object(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = {}
+        return dict(raw or {})
 
     @staticmethod
     def _get_top_behaviors(student_stats: Dict[str, int], teacher_stats: Dict[str, int], limit: int) -> List[Dict[str, Any]]:
         merged: Dict[str, int] = {}
         for key, value in list(student_stats.items()) + list(teacher_stats.items()):
-            label = ReportGenerator._format_behavior_label(key)
+            label = format_behavior_label(key)
             merged[label] = merged.get(label, 0) + int(value or 0)
         combined = [
             {"label": label, "value": value}
@@ -554,7 +567,7 @@ class ReportGenerator:
     @staticmethod
     def _rank_single_group(stats: Dict[str, int], limit: int) -> List[Dict[str, Any]]:
         items = [
-            {"label": ReportGenerator._format_behavior_label(key), "value": int(value)}
+            {"label": format_behavior_label(key), "value": int(value)}
             for key, value in stats.items()
             if int(value or 0) > 0
         ]
@@ -574,16 +587,31 @@ class ReportGenerator:
         return "".join(rendered)
 
     @staticmethod
-    def _generate_behavior_table(behavior_stats: Dict[str, int], total: int) -> str:
+    def _render_metric_cards(cards: List[Dict[str, Any]]) -> str:
+        if cards:
+            return "".join(
+                f'<article class="metric-card {"accent" if index == 0 or item.get("accent") else ""}"><span>{escape(str(item.get("label", "--")))}</span><strong>{escape(str(item.get("formatted", item.get("value", "--"))))}</strong></article>'
+                for index, item in enumerate(cards[:4])
+            )
+        return (
+            '<article class="metric-card accent"><span>总检测数</span><strong>0</strong></article>'
+            '<article class="metric-card"><span>平均置信度</span><strong>0.0%</strong></article>'
+            '<article class="metric-card"><span>处理时长</span><strong>0.0 秒</strong></article>'
+            '<article class="metric-card"><span>任务类型</span><strong>未知</strong></article>'
+        )
+
+    @staticmethod
+    def _generate_behavior_table(behavior_stats: Dict[str, int], total: int, metric_mode: str | None = None) -> str:
         if not behavior_stats or total == 0:
             return "<p class='preview-empty'>暂无检测数据</p>"
+        value_label = "轨迹数" if metric_mode == "tracking" else "检测次数"
         rows = []
         for behavior, count in sorted(behavior_stats.items(), key=lambda item: item[1], reverse=True):
             percentage = (count / total) * 100 if total else 0
             rows.append(
                 f"""
                 <tr>
-                    <td><strong>{escape(ReportGenerator._format_behavior_label(behavior))}</strong></td>
+                    <td><strong>{escape(format_behavior_label(behavior))}</strong></td>
                     <td>{count}</td>
                     <td>{percentage:.1f}%</td>
                     <td>
@@ -595,7 +623,7 @@ class ReportGenerator:
                 """
             )
         return (
-            "<table><thead><tr><th>行为类别</th><th>检测次数</th><th>占比</th><th>分布</th></tr></thead>"
+            f"<table><thead><tr><th>行为类别</th><th>{value_label}</th><th>占比</th><th>分布</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table>"
         )
 

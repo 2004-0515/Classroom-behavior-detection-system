@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from runtime_paths import NODE_FALLBACK, resolve_node, resolve_python
+from runtime_paths import NODE_FALLBACK, resolve_ffmpeg, resolve_node, resolve_python
 
 
 # Read-only baseline checks that should be cheap and environment-safe.
@@ -224,7 +224,7 @@ def check_runtime_helpers():
         return ["未找到可用 python，无法执行运行时 helper 自检"]
 
     failures = []
-    for script_name in ["runtime_paths_test.py", "model_integrity_test.py"]:
+    for script_name in ["runtime_paths_test.py", "model_integrity_test.py", "tracking_runtime_test.py", "tracking_fallback_test.py", "summary_metrics_test.py"]:
         result = subprocess.run(
             [str(python), str(ROOT / "scripts" / script_name)],
             cwd=ROOT,
@@ -236,6 +236,26 @@ def check_runtime_helpers():
         output = result.stderr.strip() or result.stdout.strip() or f"{script_name} 执行失败"
         failures.append(output)
     return failures
+
+
+def check_video_transcode_runtime():
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        return ["未找到可用 ffmpeg，视频结果无法稳定转码为浏览器可播放格式"]
+    try:
+        result = subprocess.run(
+            [str(ffmpeg), "-version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"ffmpeg 无法执行: {exc}"]
+    if result.returncode != 0:
+        details = result.stderr.strip() or result.stdout.strip() or "ffmpeg -version 返回非零退出码"
+        return [f"ffmpeg 不可用: {details}"]
+    return []
 
 
 def print_section(title, failures):
@@ -255,6 +275,7 @@ def main():
     fs_failures = run_check("目录检查", check_filesystem)
     model_failures = run_check("模型检查", check_model_assets)
     route_failures = run_check("关键路由", check_routes)
+    ffmpeg_failures = run_check("视频转码运行时", check_video_transcode_runtime)
     runtime_helper_failures = run_check("脚本运行时", check_runtime_helpers)
 
     print_section("Python 编译", python_failures)
@@ -263,6 +284,7 @@ def main():
     print_section("目录检查", fs_failures)
     print_section("模型检查", model_failures)
     print_section("关键路由", route_failures)
+    print_section("视频转码运行时", ffmpeg_failures)
     print_section("脚本运行时", runtime_helper_failures)
 
     all_failures = (
@@ -272,6 +294,7 @@ def main():
         + fs_failures
         + model_failures
         + route_failures
+        + ffmpeg_failures
         + runtime_helper_failures
     )
     if all_failures:
