@@ -14,6 +14,11 @@ def _services():
     return current_app.extensions["services"]
 
 
+def _internal_error(message: str, code: str, exc: Exception):
+    current_app.logger.exception("%s: %s", code, exc)
+    return api_error(message, code=code, status=500)
+
+
 def _task_payload_or_404(task_id, *, include_assets=True, include_live_metrics=True):
     payload = _services().task_payloads.build_task_payload(
         task_id,
@@ -38,38 +43,56 @@ def _collect_reportable_summaries(task_ids):
 @bp.route("/recent")
 @login_required
 def recent_tasks():
-    from flask import request
-
-    limit = request.args.get("limit", Config.HISTORY_RECENT_LIMIT, type=int)
-    return api_success({"tasks": _services().task_payloads.build_recent_payloads(limit)})
+    try:
+        limit = request.args.get("limit", Config.HISTORY_RECENT_LIMIT, type=int)
+        return api_success({"tasks": _services().task_payloads.build_recent_payloads(limit)})
+    except AppError as exc:
+        return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("任务历史获取失败，请稍后重试", "recent_tasks_failed", exc)
 
 
 @bp.route("/<task_id>")
 @login_required
 def task_detail(task_id):
-    task, error = _task_payload_or_404(task_id)
-    if error:
-        return error
-    return api_success(task)
+    try:
+        task, error = _task_payload_or_404(task_id)
+        if error:
+            return error
+        return api_success(task)
+    except AppError as exc:
+        return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("任务详情获取失败，请稍后重试", "task_detail_failed", exc)
 
 
 @bp.route("/<task_id>/summary")
 @login_required
 def task_summary(task_id):
-    summary, error = _task_payload_or_404(task_id)
-    if error:
-        return error
-    return api_success(summary)
+    try:
+        summary, error = _task_payload_or_404(task_id)
+        if error:
+            return error
+        return api_success(summary)
+    except AppError as exc:
+        return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("任务摘要获取失败，请稍后重试", "task_summary_failed", exc)
 
 
 @bp.route("/<task_id>/detections")
 @login_required
 def task_detections(task_id):
-    task = _services().tasks.get_task(task_id)
-    if not task:
-        return api_error("任务不存在", code="task_not_found", status=404)
-    frame_number = request.args.get("frame_number", type=int)
-    return api_success(_services().tasks.get_task_detections(task_id, frame_number))
+    try:
+        task = _services().tasks.get_task(task_id)
+        if not task:
+            return api_error("任务不存在", code="task_not_found", status=404)
+        frame_number = request.args.get("frame_number", type=int)
+        return api_success(_services().tasks.get_task_detections(task_id, frame_number))
+    except AppError as exc:
+        return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("检测明细获取失败，请稍后重试", "task_detections_failed", exc)
 
 
 @bp.route("/<task_id>/report")
@@ -86,6 +109,8 @@ def task_report(task_id):
         )
     except AppError as exc:
         return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("任务报告生成失败，请稍后重试", "task_report_failed", exc)
 
 
 @bp.route("/reports/batch", methods=["POST"])
@@ -110,3 +135,5 @@ def batch_task_reports():
         return api_success(bundle, "批量报告已生成")
     except AppError as exc:
         return api_error_from_exception(exc)
+    except Exception as exc:
+        return _internal_error("批量报告生成失败，请稍后重试", "batch_reports_failed", exc)
