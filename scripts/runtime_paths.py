@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -46,6 +47,36 @@ def _can_invoke(candidate: Path, *version_args: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def _command_output(candidate: Path, *args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(candidate), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return f"{result.stdout}\n{result.stderr}"
+
+
+def _supports_browser_mp4_transcode(candidate: Path) -> bool:
+    encoders_output = _command_output(candidate, "-hide_banner", "-encoders")
+    if not encoders_output or "libx264" not in encoders_output:
+        return False
+
+    muxers_output = _command_output(candidate, "-hide_banner", "-muxers")
+    if not muxers_output or not re.search(r"^\s*E\s+mp4\b", muxers_output, flags=re.MULTILINE):
+        return False
+
+    return True
 
 
 def _playwright_browser_roots() -> list[Path]:
@@ -107,15 +138,15 @@ def resolve_node() -> Path | None:
 
 def resolve_ffmpeg() -> Path | None:
     explicit_ffmpeg = _existing_file(os.environ.get(FFMPEG_ENV_VAR))
-    if explicit_ffmpeg and _can_invoke(explicit_ffmpeg, "-version"):
+    if explicit_ffmpeg and _supports_browser_mp4_transcode(explicit_ffmpeg):
         return explicit_ffmpeg
 
     path_ffmpeg = _existing_file(shutil.which("ffmpeg"))
-    if path_ffmpeg and _can_invoke(path_ffmpeg, "-version"):
+    if path_ffmpeg and _supports_browser_mp4_transcode(path_ffmpeg):
         return path_ffmpeg
 
     for candidate in _iter_playwright_ffmpeg_candidates():
-        if _can_invoke(candidate, "-version"):
+        if _supports_browser_mp4_transcode(candidate):
             return candidate
     return None
 
