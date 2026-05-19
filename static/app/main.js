@@ -170,6 +170,7 @@ const browserWebcamSession = {
     latestOriginalImage: null,
     latestAnnotatedImage: null,
     latestDetections: [],
+    capturePromise: null,
     timer: null,
     video: null,
     canvas: null,
@@ -826,8 +827,10 @@ function showMedia(type, src) {
         els.resultImage.removeAttribute("src");
         els.resultVideo.classList.remove("hidden");
         els.resultVideo.src = src;
+        els.resultVideo.onerror = () => clearPreview("视频预览失败", "结果视频已生成，但当前浏览器无法直接播放，请检查转码结果。");
         els.resultVideo.load();
         els.resultVideo.onloadeddata = () => setPreviewLoading(false);
+        els.resultVideo.oncanplay = () => setPreviewLoading(false);
         return;
     }
     els.resultVideo.pause();
@@ -1518,48 +1521,64 @@ async function failBrowserWebcamSession(message) {
 }
 
 async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
-    try {
-        const frame = await captureBrowserWebcamSessionFrame({
-            session: browserWebcamSession,
-            request,
-            mergeDetections,
-            getBrowserWebcamSessionStats,
-            buildBrowserWebcamTaskPayload,
-        });
-        if (!frame) return null;
-        const { stats, taskPayload, annotatedImage, processedFrames } = frame;
-        setState({
-            activeTaskPayload: taskPayload,
-            currentTask: {
-                task_id: browserWebcamSession.taskId,
-                task_type: "webcam",
-                status: "processing",
-                file_name: "browser_camera",
-                processed_frames: browserWebcamSession.processedFrames,
-                total_frames: browserWebcamSession.processedFrames,
-            },
-        });
-        showMedia("image", annotatedImage);
-        els.videoMeta.innerHTML = `<span class="pill processing">浏览器直连中</span><span class="pill">当前帧 ${processedFrames}</span>`;
-        renderTaskPayload(taskPayload);
-        renderTaskState({
-            fps: stats.fps,
-            total_detections: stats.totalDetections,
-            processed_frames: stats.processedFrames,
-            total_frames: stats.processedFrames,
-            camera_index: "browser",
-            backend: "getUserMedia",
-            eta_seconds: null,
-        });
-        renderHistory();
-        renderActionButtons();
-        return frame;
-    } catch (error) {
-        await failBrowserWebcamSession(error.message);
-        if (!silentFailure) {
-            pushNotification(`浏览器摄像头采集失败: ${error.message}`, "danger");
+    if (browserWebcamSession.capturePromise) {
+        return browserWebcamSession.capturePromise;
+    }
+    const capturePromise = (async () => {
+        try {
+            const frame = await captureBrowserWebcamSessionFrame({
+                session: browserWebcamSession,
+                request,
+                mergeDetections,
+                getBrowserWebcamSessionStats,
+                buildBrowserWebcamTaskPayload,
+            });
+            if (!frame) return null;
+            const { stats, taskPayload, annotatedImage, processedFrames } = frame;
+            if (!browserWebcamSession.active) {
+                return frame;
+            }
+            setState({
+                activeTaskPayload: taskPayload,
+                currentTask: {
+                    task_id: browserWebcamSession.taskId,
+                    task_type: "webcam",
+                    status: "processing",
+                    file_name: "browser_camera",
+                    processed_frames: browserWebcamSession.processedFrames,
+                    total_frames: browserWebcamSession.processedFrames,
+                },
+            });
+            showMedia("image", annotatedImage);
+            els.videoMeta.innerHTML = `<span class="pill processing">浏览器直连中</span><span class="pill">当前帧 ${processedFrames}</span>`;
+            renderTaskPayload(taskPayload);
+            renderTaskState({
+                fps: stats.fps,
+                total_detections: stats.totalDetections,
+                processed_frames: stats.processedFrames,
+                total_frames: stats.processedFrames,
+                camera_index: "browser",
+                backend: "getUserMedia",
+                eta_seconds: null,
+            });
+            renderHistory();
+            renderActionButtons();
+            return frame;
+        } catch (error) {
+            await failBrowserWebcamSession(error.message);
+            if (!silentFailure) {
+                pushNotification(`浏览器摄像头采集失败: ${error.message}`, "danger");
+            }
+            throw error;
         }
-        throw error;
+    })();
+    browserWebcamSession.capturePromise = capturePromise;
+    try {
+        return await capturePromise;
+    } finally {
+        if (browserWebcamSession.capturePromise === capturePromise) {
+            browserWebcamSession.capturePromise = null;
+        }
     }
 }
 
@@ -1569,6 +1588,16 @@ async function stopBrowserWebcamFallback() {
     let noticeMessage = "浏览器摄像头会话已结束，可以从历史记录回看摘要。";
     let noticeLevel = "success";
     try {
+        clearInterval(browserWebcamSession.timer);
+        browserWebcamSession.timer = null;
+        browserWebcamSession.active = false;
+        if (browserWebcamSession.capturePromise) {
+            try {
+                await browserWebcamSession.capturePromise;
+            } catch (captureError) {
+                console.warn("browser webcam capture flush failed", captureError);
+            }
+        }
         await stopBrowserWebcamSession({
             session: browserWebcamSession,
             request,

@@ -15,6 +15,7 @@ import {
     startBrowserWebcamSession,
     stopBrowserWebcamSession,
 } from "./browser-webcam-session.js";
+import { restoreStoppedTaskState, stopVideoTask } from "./task-runtime.js";
 
 test("loadTaskById requests the expected task path", async () => {
     const calls = [];
@@ -195,6 +196,92 @@ test("resolveHistoryTaskFollowup picks the correct poller", () => {
     assert.deepEqual(resolveHistoryTaskFollowup({ task_id: "2", task_type: "webcam", status: "processing" }), { poller: "webcam", taskId: "2" });
     assert.equal(resolveHistoryTaskFollowup({ task_id: "3", task_type: "image", status: "finished" }), null);
     assert.equal(resolveHistoryTaskFollowup(null), null);
+});
+
+test("stopVideoTask posts to the video stop endpoint", async () => {
+    const calls = [];
+    const result = await stopVideoTask("video-5", async (url, options) => {
+        calls.push({ url, options });
+        return { data: { ok: true } };
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        {
+            url: "/api/streams/video/video-5/stop",
+            options: { method: "POST" },
+        },
+    ]);
+});
+
+test("stopVideoTask returns early when task id is missing", async () => {
+    let called = false;
+    const result = await stopVideoTask("", async () => {
+        called = true;
+    });
+
+    assert.equal(result, false);
+    assert.equal(called, false);
+});
+
+test("restoreStoppedTaskState applies the restored task when it still exists", async () => {
+    const calls = [];
+    const task = { task_id: "video-6", status: "stopped" };
+
+    const result = await restoreStoppedTaskState({
+        taskId: "video-6",
+        emptyTitle: "unused",
+        emptyCopy: "unused",
+        loadTaskPayload: async (taskId) => {
+            calls.push(["loadTaskPayload", taskId]);
+            return task;
+        },
+        applyResult: (payload) => {
+            calls.push(["applyResult", payload.task_id]);
+        },
+        focusHistoryTask: (taskId) => {
+            calls.push(["focusHistoryTask", taskId]);
+        },
+        setEmptyState: () => {
+            calls.push(["setEmptyState"]);
+        },
+    });
+
+    assert.deepEqual(calls, [
+        ["loadTaskPayload", "video-6"],
+        ["applyResult", "video-6"],
+        ["focusHistoryTask", "video-6"],
+    ]);
+    assert.deepEqual(result, { restored: true, task });
+});
+
+test("restoreStoppedTaskState falls back to empty state when the task is gone", async () => {
+    const calls = [];
+
+    const result = await restoreStoppedTaskState({
+        taskId: "video-7",
+        emptyTitle: "empty-title",
+        emptyCopy: "empty-copy",
+        loadTaskPayload: async (taskId) => {
+            calls.push(["loadTaskPayload", taskId]);
+            return null;
+        },
+        applyResult: () => {
+            calls.push(["applyResult"]);
+        },
+        focusHistoryTask: () => {
+            calls.push(["focusHistoryTask"]);
+        },
+        setEmptyState: (title, copy) => {
+            calls.push(["setEmptyState", title, copy]);
+        },
+    });
+
+    assert.deepEqual(calls, [
+        ["loadTaskPayload", "video-7"],
+        ["setEmptyState", "empty-title", "empty-copy"],
+    ]);
+    assert.deepEqual(result, { restored: false, task: null });
 });
 
 test("startBrowserWebcamSession configures media elements and server session", async () => {
@@ -487,6 +574,8 @@ test("resetBrowserWebcamSessionState stops timer and tracks before clearing sess
         latestOriginalImage: "orig",
         latestAnnotatedImage: "anno",
         latestDetections: [{ id: 1 }],
+        latestSummary: { processed_frames: 8 },
+        capturePromise: Promise.resolve(),
         timer,
         video: { id: "video" },
         canvas: { id: "canvas" },
@@ -513,6 +602,8 @@ test("resetBrowserWebcamSessionState stops timer and tracks before clearing sess
         latestOriginalImage: null,
         latestAnnotatedImage: null,
         latestDetections: [],
+        latestSummary: null,
+        capturePromise: null,
         timer: null,
         video: null,
         canvas: null,
