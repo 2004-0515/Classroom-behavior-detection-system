@@ -38,6 +38,10 @@ jobs:
         working-directory: static/app
         run: npm ci --no-fund --no-audit
 
+      - name: Install Playwright ffmpeg runtime
+        working-directory: static/app
+        run: npm exec -- playwright install ffmpeg
+
       - name: Run full acceptance chain
         env:
           PYTHONUTF8: '1'
