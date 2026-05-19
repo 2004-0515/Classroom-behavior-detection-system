@@ -22,7 +22,11 @@ export function drawCanvasWithDetections(
         ctx.fillStyle = index === activeIndex ? activeColor : item.source === "teacher" ? "#10b981" : "#2563eb";
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
         if (uiSettings.show_bbox_labels) {
-            const label = [formatBehaviorLabel(item.behavior), uiSettings.show_confidence ? `${formatNumber((item.confidence || 0) * 100, 1)}%` : ""].filter(Boolean).join(" ");
+            const label = [
+                formatBehaviorLabel(item.behavior),
+                item.track_id != null ? `#${item.track_id}` : "",
+                uiSettings.show_confidence ? `${formatNumber((item.confidence || 0) * 100, 1)}%` : "",
+            ].filter(Boolean).join(" ");
             const textWidth = Math.max(72, ctx.measureText(label).width + 14);
             ctx.fillRect(x1, Math.max(0, y1 - 24), textWidth, 22);
             ctx.fillStyle = "#ffffff";

@@ -71,8 +71,10 @@ export function renderCharts(summary) {
     const teacherCanvas = document.getElementById("teacherChart");
     const studentFocus = document.getElementById("studentChartFocus");
     const teacherFocus = document.getElementById("teacherChartFocus");
-    const studentStats = formatBehaviorStats(summary?.student_behavior_stats || {});
-    const teacherStats = formatBehaviorStats(summary?.teacher_behavior_stats || {});
+    const studentSource = summary?.display_metrics?.behavior_charts?.student || summary?.student_behavior_stats || {};
+    const teacherSource = summary?.display_metrics?.behavior_charts?.teacher || summary?.teacher_behavior_stats || {};
+    const studentStats = formatBehaviorStats(studentSource);
+    const teacherStats = formatBehaviorStats(teacherSource);
     if (!hasChartRuntime()) {
         if (studentCanvas) {
             studentCanvas.style.visibility = "hidden";
@@ -90,7 +92,7 @@ export function renderCharts(summary) {
     if (teacherCanvas) {
         teacherCanvas.style.visibility = "visible";
     }
-    studentChart = ensureChart(studentChart, studentCanvas, "学生行为", summary?.student_behavior_stats || {}, [
+    studentChart = ensureChart(studentChart, studentCanvas, "学生行为", studentSource, [
         "#29415c",
         "#4f759b",
         "#8badcf",
@@ -98,7 +100,7 @@ export function renderCharts(summary) {
         "#8ea7bf",
         "#d5e4f2",
     ]);
-    teacherChart = ensureChart(teacherChart, teacherCanvas, "教师行为", summary?.teacher_behavior_stats || {}, [
+    teacherChart = ensureChart(teacherChart, teacherCanvas, "教师行为", teacherSource, [
         "#243349",
         "#5d7694",
         "#91aac7",
