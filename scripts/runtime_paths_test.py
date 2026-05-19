@@ -192,6 +192,60 @@ def test_returns_none_when_no_node_available() -> None:
     assert_equal(resolved, None, "missing node should return None")
 
 
+def test_prefers_ffmpeg_from_env() -> None:
+    env_ffmpeg = Path(r"C:\Env\ffmpeg.exe")
+    with (
+        patch.dict("os.environ", {runtime_paths.FFMPEG_ENV_VAR: str(env_ffmpeg)}, clear=False),
+        patch("runtime_paths.shutil.which", return_value=r"C:\Path\ffmpeg.exe"),
+        patch("runtime_paths._can_invoke", return_value=True),
+        patch("pathlib.Path.is_file", new=path_is_file_for(str(env_ffmpeg), r"C:\Path\ffmpeg.exe")),
+    ):
+        resolved = runtime_paths.resolve_ffmpeg()
+    assert_equal(resolved, env_ffmpeg, "explicit ffmpeg env var should win over PATH and Playwright fallbacks")
+
+
+def test_uses_ffmpeg_from_path_when_env_missing() -> None:
+    path_ffmpeg = Path(r"C:\Path\ffmpeg.exe")
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("runtime_paths.shutil.which", return_value=str(path_ffmpeg)),
+        patch("runtime_paths._can_invoke", return_value=True),
+        patch("pathlib.Path.is_file", new=path_is_file_for(str(path_ffmpeg))),
+    ):
+        resolved = runtime_paths.resolve_ffmpeg()
+    assert_equal(resolved, path_ffmpeg, "PATH ffmpeg should be used when env override is absent")
+
+
+def test_uses_playwright_ffmpeg_when_env_and_path_missing() -> None:
+    browser_root = Path(r"C:\Users\Test\AppData\Local\ms-playwright")
+    ffmpeg_dir = browser_root / "ffmpeg-1011"
+    ffmpeg_bin = ffmpeg_dir / "ffmpeg-win64.exe"
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("runtime_paths.shutil.which", return_value=None),
+        patch("runtime_paths._can_invoke", return_value=True),
+        patch("pathlib.Path.is_dir", new=path_is_dir_for(str(browser_root), str(ffmpeg_dir))),
+        patch("pathlib.Path.is_file", new=path_is_file_for(str(ffmpeg_bin))),
+        patch("runtime_paths._playwright_browser_roots", return_value=[browser_root]),
+        patch("pathlib.Path.glob", new=glob_for({"ffmpeg-*": [ffmpeg_dir]})),
+    ):
+        resolved = runtime_paths.resolve_ffmpeg()
+    assert_equal(resolved, ffmpeg_bin, "Playwright ffmpeg should be used when env and PATH ffmpeg are unavailable")
+
+
+def test_returns_none_when_no_ffmpeg_available() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("runtime_paths.shutil.which", return_value=None),
+        patch("runtime_paths._can_invoke", return_value=False),
+        patch("pathlib.Path.is_dir", new=path_is_dir_for()),
+        patch("pathlib.Path.is_file", new=path_is_file_for()),
+        patch("runtime_paths._playwright_browser_roots", return_value=[]),
+    ):
+        resolved = runtime_paths.resolve_ffmpeg()
+    assert_equal(resolved, None, "missing ffmpeg should return None")
+
+
 def test_resolve_playwright_node_paths_prefers_project_node_modules() -> None:
     project_node_modules = Path(r"D:\Repo\static\app\node_modules")
     fallback = Path(r"C:\Fallback\node.exe")
@@ -242,6 +296,10 @@ def main() -> int:
     test_falls_back_when_path_node_is_not_invokable()
     test_ignores_node_directory_candidates()
     test_returns_none_when_no_node_available()
+    test_prefers_ffmpeg_from_env()
+    test_uses_ffmpeg_from_path_when_env_missing()
+    test_uses_playwright_ffmpeg_when_env_and_path_missing()
+    test_returns_none_when_no_ffmpeg_available()
     test_resolve_playwright_node_paths_prefers_project_node_modules()
     test_resolve_playwright_node_paths_ignores_missing_directories()
     print("runtime_paths tests passed")

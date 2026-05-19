@@ -18,6 +18,7 @@ from werkzeug.utils import secure_filename
 from classroom_app.core.errors import InputError, MediaError, TaskExecutionError
 from classroom_app.core.summary_metrics import SummaryAccumulator, build_summary_payload
 from config import Config
+from scripts.runtime_paths import resolve_ffmpeg
 
 
 class DetectionService:
@@ -27,7 +28,7 @@ class DetectionService:
         self.config_service = config_service
         self.session_manager = session_manager
         self.logger = logging.getLogger(__name__)
-        self.ffmpeg_path = os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
+        self.ffmpeg_path = resolve_ffmpeg()
         self._browser_tracking_sessions = {}
         self._browser_tracking_lock = threading.Lock()
 
