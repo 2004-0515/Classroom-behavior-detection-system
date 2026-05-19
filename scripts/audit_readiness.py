@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from verify_report_archive import assert_report_html_contract
+
 
 ADMIN_USERNAME = "audit_admin"
 ADMIN_PASSWORD = "audit_password_123"
@@ -214,13 +216,27 @@ def run_sample_effect_audit() -> dict:
             detail = client.get(f"/api/tasks/{task_id}")
             assert_status(detail, 200, "sample image task detail")
             payload = detail.get_json()["data"]
+            summary = client.get(f"/api/tasks/{task_id}/summary")
+            assert_status(summary, 200, "sample image summary")
+            summary_payload = summary.get_json()["data"]
             report = client.get(f"/api/tasks/{task_id}/report")
             assert_status(report, 200, "sample image report generation")
+            report_payload = report.get_json()["data"]
+            report_path = Path(app.config["OUTPUT_FOLDER"]) / report_payload["report_filename"]
+            if not report_path.exists():
+                raise AssertionError(f"sample image report file missing: {report_path.name}")
+            report_validation = assert_report_html_contract(
+                summary_payload,
+                report_path.read_text(encoding="utf-8", errors="replace"),
+                "sample image report generation",
+            )
         duration = time.perf_counter() - start
         return {
             "sample": str(sample.relative_to(ROOT)),
             "duration_seconds": round(duration, 2),
             "task_id": task_id,
+            "report_filename": report_payload["report_filename"],
+            "report_metric_labels": [item["label"] for item in report_validation["verified_metrics"]],
             "total_detections": payload.get("total_detections"),
             "student_behavior_stats": payload.get("student_behavior_stats"),
             "teacher_behavior_stats": payload.get("teacher_behavior_stats"),

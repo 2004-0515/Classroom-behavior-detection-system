@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { chromium } = require('playwright');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -13,16 +14,20 @@ const VIEWPORTS = [
     { name: 'laptop-1366x900', width: 1366, height: 900, heavy: false },
     { name: 'mobile-390x844', width: 390, height: 844, heavy: false },
 ];
+// Keep the stop flow on a longer clip so the audit really interrupts an active task,
+// and keep the complete flow on a short clip so Playwright tracing stays stable.
 const SAMPLE_FILES = {
     imageA: path.join(ROOT, 'testfile', '0014012.jpg'),
     imageB: path.join(ROOT, 'testfile', '0009008.jpg'),
-    video: path.join(ROOT, 'testfile', 'QQ202618-01246-HD.mp4'),
+    videoStop: path.join(ROOT, 'testfile', 'QQ202618-01246-HD.mp4'),
+    videoComplete: path.join(ROOT, 'datasets', 'testdata', 'sample_video.mp4'),
 };
 const LOGIN_LAYOUT_SELECTORS = ['.login-badge', '.login-card h2', '.login-copy', '.inline-error', '.field span', '.primary-btn', '.login-metric strong', '.login-metric span'];
 const DASHBOARD_LAYOUT_SELECTORS = ['.nav-item', '.ghost-btn', '.primary-btn', '.danger-btn', '.pill', '.panel-tag', '.history-selection-meta', '.inline-note', '.panel-head h2', '#workspaceTitle', '.file-chip', '.gallery-item', '#notifications .notification-item'];
 const REPORT_LAYOUT_SELECTORS = ['h1', 'h2', '.pill', '.report-action', '.metric-card strong', '.metric-card span', '.speech-card p', '.tag-row .pill'];
 const AUDIT_ADMIN_USERNAME = process.env.STRICT_AUDIT_ADMIN_USERNAME || 'audit_admin';
 const AUDIT_ADMIN_PASSWORD = process.env.STRICT_AUDIT_ADMIN_PASSWORD || 'audit_password_123';
+const AUDIT_PYTHON = process.env.STRICT_AUDIT_PYTHON || 'python';
 
 function parseArgs(argv) {
     const args = {};
@@ -61,12 +66,29 @@ function writeJson(targetPath, payload) {
     fs.writeFileSync(targetPath, JSON.stringify(payload, null, 2), 'utf-8');
 }
 
+function writeBuffer(targetPath, payload) {
+    fs.writeFileSync(targetPath, payload);
+}
+
 function sanitizeSegment(value) {
     return String(value || '')
         .trim()
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '') || 'audit';
+}
+
+function normalizeAuditText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function rememberGeneratedReport(audit, key, reportContract) {
+    audit.generatedReports = audit.generatedReports || {};
+    audit.generatedReports[key] = reportContract;
+}
+
+function getGeneratedReports(audit, keys) {
+    return keys.map((key) => audit.generatedReports?.[key]).filter(Boolean);
 }
 
 function wait(ms) {
@@ -361,6 +383,127 @@ async function fetchJson(page, relativeUrl, options = {}) {
     }, { relativeUrl, options });
 }
 
+async function getCurrentTaskIdFromReportLink(page) {
+    return page.evaluate(() => {
+        const link = document.getElementById('reportLink');
+        const href = link?.getAttribute('href') || link?.dataset?.href || '';
+        const match = href.match(/\/api\/tasks\/([^/]+)\/report$/);
+        return match ? match[1] : null;
+    });
+}
+
+function getExpectedMetricCards(summary, limit = 4) {
+    return (summary?.display_metrics?.cards || []).slice(0, limit).map((item) => ({
+        label: normalizeAuditText(item?.label),
+        value: normalizeAuditText(item?.formatted ?? item?.value ?? '--'),
+    }));
+}
+
+async function getCurrentTaskSummary(page) {
+    const taskId = await getCurrentTaskIdFromReportLink(page);
+    if (!taskId) {
+        return { ok: false, reason: 'missing_task_id', taskId: null, summary: {} };
+    }
+    const summaryResponse = await fetchJson(page, `/api/tasks/${taskId}/summary`);
+    return {
+        ok: summaryResponse.status === 200,
+        taskId,
+        summary: summaryResponse.payload?.data || {},
+    };
+}
+
+async function getTaskReportContract(page, taskId) {
+    if (!taskId) {
+        return { ok: false, reason: 'missing_task_id', taskId: null, summary: {}, reportFilename: '', reportUrl: '' };
+    }
+    const [summaryResponse, reportResponse] = await Promise.all([
+        fetchJson(page, `/api/tasks/${taskId}/summary`),
+        fetchJson(page, `/api/tasks/${taskId}/report`),
+    ]);
+    return {
+        ok: summaryResponse.status === 200 && reportResponse.status === 200,
+        taskId,
+        summary: summaryResponse.payload?.data || {},
+        reportFilename: reportResponse.payload?.data?.report_filename || '',
+        reportUrl: reportResponse.payload?.data?.report_url || '',
+    };
+}
+
+async function getCurrentTaskReportContract(page) {
+    const taskId = await getCurrentTaskIdFromReportLink(page);
+    return getTaskReportContract(page, taskId);
+}
+
+function isTrackingPrimaryLabel(label) {
+    const normalized = normalizeAuditText(label);
+    if (!normalized) {
+        return false;
+    }
+    return !/(总检测数|累计检测次数|检测数)/.test(normalized);
+}
+
+function hasTrackingCards(expectedCards) {
+    const labels = expectedCards.map((item) => normalizeAuditText(item.label));
+    return ['独立目标数', '有效帧覆盖率'].every((label) => labels.includes(normalizeAuditText(label)));
+}
+
+async function auditCurrentTaskTracking(page) {
+    const taskId = await getCurrentTaskIdFromReportLink(page);
+    if (!taskId) {
+        return { ok: false, reason: 'missing_task_id' };
+    }
+    const summaryResponse = await fetchJson(page, `/api/tasks/${taskId}/summary`);
+    const detectionsResponse = await fetchJson(page, `/api/tasks/${taskId}/detections`);
+    const summary = summaryResponse.payload?.data || {};
+    const detections = detectionsResponse.payload?.data || {};
+    const allDetections = [
+        ...(detections.student_detections || []),
+        ...(detections.teacher_detections || []),
+    ];
+    const summaryTotalDetections = Number(summary.total_detections || 0);
+    const expectedCards = getExpectedMetricCards(summary);
+    const renderedCards = await page.evaluate(() => (
+        Array.from(document.querySelectorAll('#summaryCards .summary-card')).slice(0, 4).map((card) => ({
+            label: ((card.querySelector('span') && card.querySelector('span').innerText) || '').replace(/\s+/g, ' ').trim(),
+            value: ((card.querySelector('strong') && card.querySelector('strong').innerText) || '').replace(/\s+/g, ' ').trim(),
+        }))
+    ));
+    const expectedPrimary = summary.display_metrics?.primary_stat
+        ? normalizeAuditText(`${summary.display_metrics.primary_stat.label} ${summary.display_metrics.primary_stat.formatted || summary.display_metrics.primary_stat.value || 0}`)
+        : '';
+    const primaryLabel = normalizeAuditText(summary.display_metrics?.primary_stat?.label || '');
+    const historyMetricLine = await page.evaluate((currentTaskId) => {
+        const items = Array.from(document.querySelectorAll('#historyList .history-item[data-task-id]'));
+        const match = items.find((item) => String(item.dataset.taskId || '') === String(currentTaskId));
+        if (!match) return '';
+        const node = match.querySelector('.history-meta span');
+        return ((node && node.innerText) || '').replace(/\s+/g, ' ').trim();
+    }, taskId);
+    const metricMode = summary.display_metrics?.metric_mode || null;
+    const cardsMatchSummary = expectedCards.length === renderedCards.length
+        && expectedCards.every((item, index) => item.label === normalizeAuditText(renderedCards[index]?.label) && item.value === normalizeAuditText(renderedCards[index]?.value));
+    const historyMetricMatchesSummary = !expectedPrimary || normalizeAuditText(historyMetricLine) === expectedPrimary;
+    return {
+        ok: summaryResponse.status === 200 && detectionsResponse.status === 200,
+        taskId,
+        summary,
+        detectionCount: allDetections.length,
+        summaryTotalDetections,
+        detectionCountMatchesSummary: summaryTotalDetections === allDetections.length,
+        allHaveTrackIds: allDetections.every((item) => item.track_id != null),
+        metricMode,
+        expectedCards,
+        renderedCards,
+        cardsMatchSummary,
+        expectedPrimary,
+        primaryLabel,
+        trackingPrimaryLooksValid: metricMode !== 'tracking' || isTrackingPrimaryLabel(primaryLabel),
+        hasRequiredTrackingCards: metricMode !== 'tracking' || hasTrackingCards(expectedCards),
+        historyMetricLine,
+        historyMetricMatchesSummary,
+    };
+}
+
 async function auditPageLayout(audit, flowState, page, options) {
     const selectors = options.selectors || [];
     const pageOverflow = await page.evaluate(() => ({
@@ -559,6 +702,25 @@ async function triggerWindowOpen(page, clickSelector, responsePredicate, timeout
     return waitForOpenedUrl(page, timeout);
 }
 
+async function triggerWindowOpenWithResponse(page, clickSelector, responsePredicate, timeout = 20000) {
+    await clearOpenedUrls(page);
+    const responsePromise = responsePredicate ? page.waitForResponse(responsePredicate, { timeout }) : null;
+    await page.click(clickSelector);
+    const response = responsePromise ? await responsePromise : null;
+    let responseJson = null;
+    if (response) {
+        try {
+            responseJson = await response.json();
+        } catch (error) {
+            responseJson = null;
+        }
+    }
+    return {
+        openedUrl: await waitForOpenedUrl(page, timeout),
+        responseJson,
+    };
+}
+
 function toAbsoluteUrl(baseUrl, maybeRelativeUrl) {
     if (/^https?:/i.test(maybeRelativeUrl)) {
         return maybeRelativeUrl;
@@ -566,16 +728,111 @@ function toAbsoluteUrl(baseUrl, maybeRelativeUrl) {
     return `${baseUrl}${maybeRelativeUrl}`;
 }
 
-async function auditReportPage(audit, flowState, context, reportUrl, label) {
+function validateBatchArchiveWithPython(zipPath, expectationsPath, label) {
+    return spawnSync(
+        AUDIT_PYTHON,
+        [path.join(ROOT, 'scripts', 'verify_report_archive.py'), '--zip-path', zipPath, '--expectations-path', expectationsPath, '--label', label],
+        {
+            cwd: ROOT,
+            encoding: 'utf-8',
+        },
+    );
+}
+
+async function auditBatchArchive(audit, flowState, page, zipUrl, expectedReports, label) {
+    const zipFileName = path.basename(new URL(toAbsoluteUrl(audit.baseUrl, zipUrl)).pathname);
+    const zipPath = path.join(flowState.flowDir, zipFileName || `${sanitizeSegment(label)}.zip`);
+    const expectationsPath = path.join(flowState.flowDir, `${sanitizeSegment(label)}-expectations.json`);
+    const validationLogPath = path.join(flowState.flowDir, `${sanitizeSegment(label)}-validation.json`);
+    const payload = expectedReports.map((item) => ({
+        task_id: item.taskId,
+        report_filename: item.reportFilename,
+        summary: item.summary,
+    }));
+    writeJson(expectationsPath, payload);
+    flowState.evidencePaths.push(toRelative(expectationsPath));
+    const downloadResponse = await page.context().request.get(toAbsoluteUrl(audit.baseUrl, zipUrl));
+    if (!downloadResponse.ok()) {
+        throw new Error(`download failed: ${zipUrl} -> HTTP ${downloadResponse.status()}`);
+    }
+    const zipBytes = await downloadResponse.body();
+    writeBuffer(zipPath, zipBytes);
+    flowState.evidencePaths.push(toRelative(zipPath));
+    const result = validateBatchArchiveWithPython(zipPath, expectationsPath, label);
+    const validationOutput = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    writeJson(validationLogPath, { status: result.status, output: validationOutput });
+    flowState.evidencePaths.push(toRelative(validationLogPath));
+    if (result.status !== 0) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, `导出 ${label} 压缩包并逐份核对报告 HTML。`],
+            expected: '批量导出的 ZIP 应包含选中的报告 HTML、manifest/readme，并且每份报告的指标卡片应与对应 summary 保持一致。',
+            observed: validationOutput || `${label} ZIP 校验失败`,
+            missing_regression: '现有严格审计此前只验证 ZIP 地址是否打开，没有逐份检查压缩包内报告 HTML 与 summary 的一致性。',
+        });
+    }
+}
+
+async function auditModelLibraryNaming(audit, flowState, page) {
+    await page.click('#modelLibraryBtn');
+    await page.waitForFunction(() => !document.getElementById('modelLibraryModal').classList.contains('hidden'), undefined, { timeout: 10000 });
+    const unnamedEntries = await page.evaluate(() => (
+        Array.from(document.querySelectorAll('#modelLibraryContent .model-library-item strong'))
+            .map((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter((text) => /未命名/.test(text))
+            .slice(0, 8)
+    ));
+    if (unnamedEntries.length) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, '打开候选模型库弹窗并检查每个模型入口标题。'],
+            expected: '候选模型库里的每个模型入口都应提供稳定、可区分的显示名，不应出现“未命名”。',
+            observed: `候选模型库仍有 ${unnamedEntries.length} 个未命名入口，例如: ${unnamedEntries[0]}`,
+            missing_regression: '现有严格审计只验证模型库弹窗能打开和可键盘关闭，没有检查实际显示名是否退化成“未命名”。',
+        });
+    }
+    await page.click('#modelLibraryModal [data-close-dialog]');
+    await page.waitForFunction(() => document.getElementById('modelLibraryModal').classList.contains('hidden'), undefined, { timeout: 5000 });
+}
+
+async function auditReportPage(audit, flowState, context, reportUrl, label, options = {}) {
     const absoluteUrl = toAbsoluteUrl(audit.baseUrl, reportUrl);
     const reportPage = await context.newPage();
     attachDiagnostics(reportPage, flowState);
     await reportPage.goto(absoluteUrl, { waitUntil: 'domcontentloaded' });
     await reportPage.waitForSelector('h1', { timeout: 15000 });
-    const requiredText = ['课堂行为检测报告', '总检测数', '学生行为分析', '教师/人头行为分析', '建议与分析'];
+    const requiredText = ['课堂行为检测报告', '学生行为分析', '教师/人头行为分析', '建议与分析'];
     for (const text of requiredText) {
         const visible = await reportPage.locator(`text=${text}`).count();
         assert(visible > 0, `${label} 缺少关键区块: ${text}`);
+    }
+    const requiredMetricText = options.requiredMetricText || ['总检测数'];
+    for (const text of requiredMetricText) {
+        const visible = await reportPage.locator(`text=${text}`).count();
+        assert(visible > 0, `${label} 缺少关键指标: ${text}`);
+    }
+    const expectedMetricCards = Array.isArray(options.expectedMetricCards) ? options.expectedMetricCards : [];
+    if (expectedMetricCards.length) {
+        const renderedMetricCards = await reportPage.evaluate(() => (
+            Array.from(document.querySelectorAll('.metric-card')).slice(0, 4).map((card) => ({
+                label: ((card.querySelector('span') && card.querySelector('span').innerText) || '').replace(/\s+/g, ' ').trim(),
+                value: ((card.querySelector('strong') && card.querySelector('strong').innerText) || '').replace(/\s+/g, ' ').trim(),
+            }))
+        ));
+        const reportMetricsMatch = expectedMetricCards.length === renderedMetricCards.length
+            && expectedMetricCards.every((item, index) => (
+                item.label === normalizeAuditText(renderedMetricCards[index]?.label)
+                && item.value === normalizeAuditText(renderedMetricCards[index]?.value)
+            ));
+        if (!reportMetricsMatch) {
+            addIssue(audit, flowState, {
+                severity: 'major',
+                repro_steps: [...flowState.stepLog, `打开 ${label} 并检查报告指标卡片。`],
+                expected: '报告页 metric cards 应与 summary API 的 display_metrics.cards 前 4 项保持同一口径和同一格式化值。',
+                observed: `expected=${JSON.stringify(expectedMetricCards)} rendered=${JSON.stringify(renderedMetricCards)}`,
+                missing_regression: '现有严格审计只验证报告页能打开和包含指标标题，无法发现 summary 正确但 HTML 报告仍渲染旧值或错位值的情况。',
+            });
+        }
     }
     const printCount = await reportPage.locator('.report-action.primary').count();
     if (!printCount) {
@@ -812,6 +1069,7 @@ async function auditDashboardFlow(ctx) {
     await auditDialogAccessibility(audit, flowState, page, { openerSelector: '#settingsBtn', modalId: 'settingsModal', label: '设置弹窗' });
     await auditDialogAccessibility(audit, flowState, page, { openerSelector: '#currentModelDetailsBtn', modalId: 'modelDetailsModal', label: '当前模型弹窗' });
     await auditDialogAccessibility(audit, flowState, page, { openerSelector: '#modelLibraryBtn', modalId: 'modelLibraryModal', label: '候选模型库弹窗' });
+    await auditModelLibraryNaming(audit, flowState, page);
     await captureScreenshot(page, flowState, 'dashboard-modes', { fullPage: true });
 }
 
@@ -859,17 +1117,35 @@ async function auditImageFlow(ctx) {
         selectors: DASHBOARD_LAYOUT_SELECTORS,
     });
     await auditDialogAccessibility(audit, flowState, page, { openerSelector: '#openDetailBtn', modalId: 'detailModal', label: '结果细看弹窗' });
+    const imageSummaryAudit = await getCurrentTaskSummary(page);
+    const imageReportContract = await getCurrentTaskReportContract(page);
     flowState.stepLog.push('打开单图报告');
-    const reportUrl = await triggerWindowOpen(
+    const reportOpen = await triggerWindowOpenWithResponse(
         page,
         '#reportLink',
         (response) => /\/api\/tasks\/[^/]+\/report$/.test(new URL(response.url()).pathname) && response.request().method() === 'GET',
     );
-    await auditReportPage(audit, flowState, context, reportUrl, '单图报告');
+    const expectedOpenedUrl = imageReportContract.reportUrl || reportOpen.responseJson?.data?.report_url || '';
+    if (expectedOpenedUrl && reportOpen.openedUrl !== expectedOpenedUrl) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '点击报告按钮后应打开当前任务对应的 report_url。',
+            observed: `报告按钮打开了 ${reportOpen.openedUrl}，但接口返回的是 ${expectedOpenedUrl}`,
+            missing_regression: '现有严格审计此前没有把报告按钮实际打开的地址与接口返回的 report_url 逐一对齐。',
+        });
+    }
+    await auditReportPage(audit, flowState, context, reportOpen.openedUrl, '单图报告', {
+        requiredMetricText: ['总检测数'],
+        expectedMetricCards: getExpectedMetricCards(imageSummaryAudit.summary),
+    });
+    if (imageReportContract.ok) {
+        rememberGeneratedReport(audit, 'image', imageReportContract);
+    }
 }
 
 async function auditBatchFlow(ctx) {
-    const { audit, page, flowState } = ctx;
+    const { audit, page, context, flowState } = ctx;
     flowState.stepLog.push('进入批量模式并选择两张样例图片');
     await openAuthenticatedPage(page, audit.baseUrl, 'batch');
     const beforeHistory = await countHistoryTasks(page);
@@ -909,24 +1185,122 @@ async function auditBatchFlow(ctx) {
             missing_regression: '现有验收没有覆盖历史多选和批量导出的按钮状态切换。',
         });
     }
-    flowState.stepLog.push('导出所选批量报告');
-    const zipUrl = await triggerWindowOpen(
+    const batchReportContract = await getCurrentTaskReportContract(page);
+    flowState.stepLog.push('打开批量任务报告');
+    const reportOpen = await triggerWindowOpenWithResponse(
         page,
-        '#historyExportSelectedBtn',
-        (response) => response.url().endsWith('/api/tasks/reports/batch') && response.request().method() === 'POST',
+        '#reportLink',
+        (response) => /\/api\/tasks\/[^/]+\/report$/.test(new URL(response.url()).pathname) && response.request().method() === 'GET',
     );
-    if (!/\.zip($|\?)/i.test(zipUrl)) {
+    const expectedOpenedUrl = batchReportContract.reportUrl || reportOpen.responseJson?.data?.report_url || '';
+    if (expectedOpenedUrl && reportOpen.openedUrl !== expectedOpenedUrl) {
         addIssue(audit, flowState, {
             severity: 'major',
             repro_steps: [...flowState.stepLog],
-            expected: '批量导出后应打开 ZIP 下载地址。',
-            observed: `批量导出记录到的地址不是 ZIP: ${zipUrl}`,
-            missing_regression: '现有验收只看接口层返回，不验证浏览器导出动作是否真的指向 ZIP。',
+            expected: '点击报告按钮后应打开当前批量任务对应的 report_url。',
+            observed: `批量任务报告按钮打开了 ${reportOpen.openedUrl}，但接口返回的是 ${expectedOpenedUrl}`,
+            missing_regression: '现有严格审计此前没有把批量任务报告按钮实际打开的地址与接口返回的 report_url 对齐。',
         });
     }
-    await captureScreenshot(page, flowState, 'batch-history-export', { fullPage: true });
+    await auditReportPage(audit, flowState, context, reportOpen.openedUrl, '批量任务报告', {
+        requiredMetricText: ['总检测数'],
+        expectedMetricCards: getExpectedMetricCards(batchReportContract.summary),
+    });
+    if (batchReportContract.ok) {
+        rememberGeneratedReport(audit, 'batch', batchReportContract);
+    }
+    await captureScreenshot(page, flowState, 'batch-task-report', { fullPage: true });
     await auditPageLayout(audit, flowState, page, {
         label: '批量检测与历史导出页',
+        selectors: DASHBOARD_LAYOUT_SELECTORS,
+    });
+}
+
+async function auditHistoryBatchExportFlow(ctx) {
+    const { audit, page, flowState } = ctx;
+    const expectedReports = getGeneratedReports(audit, ['image', 'batch', 'video']);
+    if (expectedReports.length < 3) {
+        addIssue(audit, flowState, {
+            severity: 'coverage_gap',
+            repro_steps: [...flowState.stepLog, '尝试基于历史任务导出多份跨模式报告。'],
+            expected: '严格审计应在导出前先准备单图、批量、视频三种任务的报告契约。',
+            observed: `当前仅缓存了 ${expectedReports.length} 份报告契约，无法完成跨模式 ZIP 校验。`,
+            missing_regression: '现有严格审计此前没有把跨模式历史导出和逐份 ZIP 内容校验收进同一条浏览器验收链。',
+        });
+        return;
+    }
+    flowState.stepLog.push('进入历史记录并手动选中单图、批量、视频三类任务');
+    await openAuthenticatedPage(page, audit.baseUrl, 'image');
+    await page.fill('#historyFilter', '');
+    await page.selectOption('#historyModeFilter', 'all');
+    await page.selectOption('#historySort', 'recent');
+    const showcaseOnly = await page.isChecked('#historyShowcaseOnly');
+    if (showcaseOnly) {
+        await page.click('#historyShowcaseOnly');
+    }
+    const expectedTaskIds = expectedReports.map((item) => String(item.taskId));
+    await page.waitForFunction((taskIds) => taskIds.every((taskId) => document.querySelector(`#historyList .history-select[data-task-id="${taskId}"]`)), expectedTaskIds, { timeout: 20000 });
+    for (const taskId of expectedTaskIds) {
+        const checkbox = page.locator(`#historyList .history-select[data-task-id="${taskId}"]`);
+        if (!(await checkbox.isChecked())) {
+            await checkbox.check();
+        }
+    }
+    await page.waitForFunction((expectedCount) => {
+        const text = (document.getElementById('historySelectionMeta')?.innerText || '').replace(/\s+/g, ' ').trim();
+        return text.includes(`已选 ${expectedCount} 条任务`);
+    }, expectedReports.length, { timeout: 10000 });
+    const exportEnabled = !(await page.locator('#historyExportSelectedBtn').isDisabled());
+    if (!exportEnabled) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, `手动勾选 ${expectedReports.length} 条历史任务。`],
+            expected: '手动勾选历史任务后，导出选中报告按钮应启用。',
+            observed: '历史导出按钮仍然禁用。',
+            missing_regression: '现有严格审计此前没有覆盖跨模式手动勾选历史任务后的导出可用性。',
+        });
+    }
+    flowState.stepLog.push('导出跨模式历史报告 ZIP 并逐份核对 HTML');
+    const exportOpen = await triggerWindowOpenWithResponse(
+        page,
+        '#historyExportSelectedBtn',
+        (response) => response.url().endsWith('/api/tasks/reports/batch') && response.request().method() === 'POST',
+        30000,
+    );
+    const payload = exportOpen.responseJson?.data || {};
+    if (Number(payload.report_count || 0) !== expectedReports.length) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: `导出返回的 report_count 应等于选中的 ${expectedReports.length} 条任务。`,
+            observed: `接口返回 report_count=${payload.report_count ?? 'unknown'}`,
+            missing_regression: '现有严格审计此前没有把浏览器层的历史勾选数量与后端返回的 report_count 绑定校验。',
+        });
+    }
+    const expectedZipUrl = payload.zip_url || '';
+    if (expectedZipUrl && exportOpen.openedUrl !== expectedZipUrl) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '导出按钮应打开接口返回的 zip_url。',
+            observed: `导出按钮打开了 ${exportOpen.openedUrl}，但接口返回的是 ${expectedZipUrl}`,
+            missing_regression: '现有严格审计此前没有把导出动作实际打开的地址与接口返回的 zip_url 逐一对齐。',
+        });
+    }
+    if (!/\.zip($|\?)/i.test(exportOpen.openedUrl || '')) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '导出所选报告后应打开 ZIP 下载地址。',
+            observed: `导出动作打开的地址不是 ZIP: ${exportOpen.openedUrl}`,
+            missing_regression: '现有严格审计此前只看按钮能否点击，没有断言浏览器最终打开的是 ZIP 资源。',
+        });
+    } else {
+        await auditBatchArchive(audit, flowState, page, exportOpen.openedUrl, expectedReports, 'history batch export');
+    }
+    await captureScreenshot(page, flowState, 'history-batch-export-contract', { fullPage: true });
+    await auditPageLayout(audit, flowState, page, {
+        label: '历史跨模式报告导出页',
         selectors: DASHBOARD_LAYOUT_SELECTORS,
     });
 }
@@ -936,7 +1310,7 @@ async function auditVideoStopFlow(ctx) {
     flowState.stepLog.push('进入视频模式并上传样例视频');
     await openAuthenticatedPage(page, audit.baseUrl, 'video');
     const beforeHistory = await countHistoryTasks(page);
-    await page.locator('#fileInput').setInputFiles(SAMPLE_FILES.video);
+    await page.locator('#fileInput').setInputFiles(SAMPLE_FILES.videoStop);
     flowState.stepLog.push('启动视频检测并在处理中停止任务');
     await Promise.all([
         page.waitForResponse((response) => response.url().endsWith('/api/detect/video') && response.request().method() === 'POST', { timeout: 30000 }),
@@ -966,7 +1340,8 @@ async function auditVideoCompleteFlow(ctx) {
     const { audit, page, context, flowState } = ctx;
     flowState.stepLog.push('进入视频模式并等待完整处理结束');
     await openAuthenticatedPage(page, audit.baseUrl, 'video');
-    await page.locator('#fileInput').setInputFiles(SAMPLE_FILES.video);
+    const beforeHistory = await countHistoryTasks(page);
+    await page.locator('#fileInput').setInputFiles(SAMPLE_FILES.videoComplete);
     await Promise.all([
         page.waitForResponse((response) => response.url().endsWith('/api/detect/video') && response.request().method() === 'POST', { timeout: 30000 }),
         page.click('#runBtn'),
@@ -975,19 +1350,87 @@ async function auditVideoCompleteFlow(ctx) {
         const link = document.getElementById('reportLink');
         return link && link.getAttribute('aria-disabled') === 'false';
     }, undefined, { timeout: 240000 });
+    await waitForHistoryIncrease(page, beforeHistory, 20000);
     await captureScreenshot(page, flowState, 'video-complete', { fullPage: true });
+    await page.waitForFunction(() => {
+        const video = document.getElementById('resultVideo');
+        return Boolean(
+            video
+            && !video.classList.contains('hidden')
+            && (video.currentSrc || video.getAttribute('src') || '')
+            && Number.isFinite(video.duration)
+            && video.duration > 0
+            && !video.error
+            && video.readyState >= 2,
+        );
+    }, undefined, { timeout: 30000 }).catch(() => {});
+    const videoState = await page.evaluate(() => {
+        const video = document.getElementById('resultVideo');
+        return video ? {
+            visible: !video.classList.contains('hidden'),
+            currentSrc: video.currentSrc || video.getAttribute('src') || '',
+            readyState: video.readyState,
+            duration: Number.isFinite(video.duration) ? Number(video.duration.toFixed(2)) : null,
+            error: video.error ? { code: video.error.code, message: video.error.message || '' } : null,
+        } : null;
+    });
+    if (!videoState || !videoState.visible || !videoState.currentSrc || videoState.readyState < 2 || !videoState.duration || videoState.error) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, '等待视频任务处理完成。'],
+            expected: '视频结果预览应加载可播放资源，拿到有效时长，并至少进入 HAVE_CURRENT_DATA 状态。',
+            observed: `结果视频状态异常: ${JSON.stringify(videoState)}`,
+            missing_regression: '现有后端烟测只验证任务完成和报告生成，没有校验浏览器端视频元数据、有效时长和播放错误状态。',
+        });
+    }
+    const trackingAudit = await auditCurrentTaskTracking(page);
+    if (
+        !trackingAudit.ok
+        || trackingAudit.metricMode !== 'tracking'
+        || !trackingAudit.detectionCountMatchesSummary
+        || (trackingAudit.detectionCount > 0 && !trackingAudit.allHaveTrackIds)
+        || !trackingAudit.cardsMatchSummary
+        || !trackingAudit.trackingPrimaryLooksValid
+        || !trackingAudit.hasRequiredTrackingCards
+        || !trackingAudit.historyMetricMatchesSummary
+    ) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, '等待视频任务处理完成后检查 summary/detections 接口、当前 summary 卡片和历史项。'],
+            expected: '视频任务 summary 应返回 tracking 型 display_metrics，主指标不能退化回累计检测次数，且 summary.total_detections 应与 detection 明细条数一致；检测明细在有结果时应全部携带 track_id，页面 summary 卡片与历史主指标也应和 summary 保持一致。',
+            observed: `tracking 审计结果异常: ${JSON.stringify(trackingAudit)}`,
+            missing_regression: '现有界面审计没有把 detail API 与当前 summary 卡片 / 历史主指标绑在一起，无法发现接口值正确但前端渲染错位的情况。',
+        });
+    }
     await auditPageLayout(audit, flowState, page, {
         label: '视频完成态结果页',
         selectors: DASHBOARD_LAYOUT_SELECTORS,
     });
     flowState.stepLog.push('打开视频报告');
-    const reportUrl = await triggerWindowOpen(
+    const videoReportContract = await getCurrentTaskReportContract(page);
+    const reportOpen = await triggerWindowOpenWithResponse(
         page,
         '#reportLink',
         (response) => /\/api\/tasks\/[^/]+\/report$/.test(new URL(response.url()).pathname) && response.request().method() === 'GET',
         30000,
     );
-    await auditReportPage(audit, flowState, context, reportUrl, '视频报告');
+    const expectedOpenedUrl = videoReportContract.reportUrl || reportOpen.responseJson?.data?.report_url || '';
+    if (expectedOpenedUrl && reportOpen.openedUrl !== expectedOpenedUrl) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '点击视频报告按钮后应打开当前任务对应的 report_url。',
+            observed: `视频报告按钮打开了 ${reportOpen.openedUrl}，但接口返回的是 ${expectedOpenedUrl}`,
+            missing_regression: '现有严格审计此前没有把视频报告按钮实际打开的地址与接口返回的 report_url 对齐。',
+        });
+    }
+    await auditReportPage(audit, flowState, context, reportOpen.openedUrl, '视频报告', {
+        requiredMetricText: ['独立目标数', '有效帧覆盖率'],
+        expectedMetricCards: trackingAudit.expectedCards,
+    });
+    if (videoReportContract.ok) {
+        rememberGeneratedReport(audit, 'video', videoReportContract);
+    }
 }
 
 async function auditWebcamFallbackSuccessFlow(ctx) {
@@ -1007,6 +1450,25 @@ async function auditWebcamFallbackSuccessFlow(ctx) {
     await page.click('#stopWebcamBtn');
     await page.waitForFunction(() => document.getElementById('stopWebcamBtn').classList.contains('hidden'), undefined, { timeout: 30000 });
     await waitForHistoryIncrease(page, beforeHistory, 20000);
+    const trackingAudit = await auditCurrentTaskTracking(page);
+    if (
+        !trackingAudit.ok
+        || trackingAudit.metricMode !== 'tracking'
+        || !trackingAudit.detectionCountMatchesSummary
+        || (trackingAudit.detectionCount > 0 && !trackingAudit.allHaveTrackIds)
+        || !trackingAudit.cardsMatchSummary
+        || !trackingAudit.trackingPrimaryLooksValid
+        || !trackingAudit.hasRequiredTrackingCards
+        || !trackingAudit.historyMetricMatchesSummary
+    ) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog, '停止浏览器 fallback 摄像头会话后检查 summary/detections 接口、当前 summary 卡片和历史项。'],
+            expected: '浏览器 fallback 摄像头任务应保存 tracking 型摘要，主指标不能退化回累计检测次数；summary.total_detections 应与检测明细条数一致，检测明细在有结果时应全部回传 track_id，且页面 summary 卡片与历史主指标应和 summary 保持一致。',
+            observed: `tracking 审计结果异常: ${JSON.stringify(trackingAudit)}`,
+            missing_regression: '现有严格审计覆盖了 fallback 成功路径，但没有验证该路径的 track_id / display_metrics 不仅落库一致，还被前端按同一口径渲染。',
+        });
+    }
     await auditPageLayout(audit, flowState, page, {
         label: '浏览器摄像头 fallback 结果页',
         selectors: DASHBOARD_LAYOUT_SELECTORS,
@@ -1107,6 +1569,25 @@ async function auditServerWebcamFlow(ctx) {
         await page.click('#stopWebcamBtn');
         await waitForNotification(page, /摄像头已停止|浏览器摄像头直连已停止/, 30000);
         await waitForHistoryIncrease(page, beforeHistory, 20000);
+        const trackingAudit = await auditCurrentTaskTracking(page);
+        if (
+            !trackingAudit.ok
+            || trackingAudit.metricMode !== 'tracking'
+            || !trackingAudit.detectionCountMatchesSummary
+            || (trackingAudit.detectionCount > 0 && !trackingAudit.allHaveTrackIds)
+            || !trackingAudit.cardsMatchSummary
+            || !trackingAudit.trackingPrimaryLooksValid
+            || !trackingAudit.hasRequiredTrackingCards
+            || !trackingAudit.historyMetricMatchesSummary
+        ) {
+            addIssue(audit, flowState, {
+                severity: 'major',
+                repro_steps: [...flowState.stepLog, '停止服务端摄像头后检查 summary/detections 接口、当前 summary 卡片和历史项。'],
+                expected: '服务端摄像头任务应保存 tracking 型摘要，主指标不能退化回累计检测次数；summary.total_detections 应与检测明细条数一致，检测明细在有结果时应全部携带 track_id，且页面 summary 卡片与历史主指标应和 summary 保持一致。',
+                observed: `tracking 审计结果异常: ${JSON.stringify(trackingAudit)}`,
+                missing_regression: '现有严格审计在服务端摄像头成功路径上只确认能启停，没有验证其落库 summary 与前端展示是否同口径。',
+            });
+        }
     } catch (error) {
         if (serverStarted) {
             throw error;
@@ -1180,10 +1661,11 @@ async function main() {
             await runFlow(audit, viewport, 'login-success', {}, auditSuccessfulLoginFlow);
             await runFlow(audit, viewport, 'dashboard-workspace', {}, auditDashboardFlow);
             await runFlow(audit, viewport, 'image-report', {}, auditImageFlow);
-            await runFlow(audit, viewport, 'batch-history-export', {}, auditBatchFlow);
+            await runFlow(audit, viewport, 'batch-task-report', {}, auditBatchFlow);
             await runFlow(audit, viewport, 'video-stop', {}, auditVideoStopFlow);
             await runFlow(audit, viewport, 'webcam-browser-fallback', { fakeMedia: true }, auditWebcamFallbackSuccessFlow);
             await runFlow(audit, viewport, 'video-complete', {}, auditVideoCompleteFlow);
+            await runFlow(audit, viewport, 'history-batch-export', {}, auditHistoryBatchExportFlow);
             await runFlow(audit, viewport, 'webcam-server-start-stop', {}, auditServerWebcamFlow);
             await runFlow(
                 audit,

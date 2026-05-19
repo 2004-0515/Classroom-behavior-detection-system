@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from verify_report_archive import assert_batch_archive_contract, assert_report_html_contract, build_archive_expectations
+
 
 # Cover the primary end-to-end business paths in an isolated regression environment.
 def configure_temp_environment():
@@ -34,6 +36,47 @@ def assert_status(response, expected=200, label="request"):
 
 def upload_file_tuple(path: Path, field_name: str = "file"):
     return {field_name: (io.BytesIO(path.read_bytes()), path.name)}
+
+
+def assert_tracking_summary(summary_payload: dict, detection_payload: dict, label: str) -> None:
+    display_metrics = summary_payload.get("display_metrics")
+    derived_metrics = summary_payload.get("derived_metrics")
+    if not isinstance(display_metrics, dict) or not isinstance(derived_metrics, dict):
+        raise AssertionError(f"{label} missing display_metrics/derived_metrics")
+    if display_metrics.get("metric_mode") != "tracking" or derived_metrics.get("metric_mode") != "tracking":
+        raise AssertionError(f"{label} missing tracking metric mode")
+
+    unique_by_source = {"student": set(), "teacher": set()}
+    per_frame_track_keys: dict[int, set[str]] = {}
+    total_detections = 0
+    for source in ("student", "teacher"):
+        detections = detection_payload.get(f"{source}_detections", []) or []
+        for item in detections:
+            total_detections += 1
+            track_id = item.get("track_id")
+            if track_id is None:
+                raise AssertionError(f"{label} detections missing track_id")
+            numeric_track_id = int(track_id)
+            unique_by_source[source].add(numeric_track_id)
+            frame_number = int(item.get("frame_number") or 0)
+            frame_track_keys = per_frame_track_keys.setdefault(frame_number, set())
+            frame_track_keys.add(f"{source}:{numeric_track_id}")
+
+    expected_breakdown = {
+        "student": len(unique_by_source["student"]),
+        "teacher": len(unique_by_source["teacher"]),
+    }
+    expected_unique_targets = expected_breakdown["student"] + expected_breakdown["teacher"]
+    expected_peak_concurrency = max((len(track_keys) for track_keys in per_frame_track_keys.values()), default=0)
+
+    if int(summary_payload.get("total_detections", 0) or 0) != total_detections:
+        raise AssertionError(f"{label} total_detections mismatch")
+    if int(derived_metrics.get("unique_targets", 0) or 0) != expected_unique_targets:
+        raise AssertionError(f"{label} unique_targets mismatch")
+    if int(derived_metrics.get("peak_concurrency", 0) or 0) != expected_peak_concurrency:
+        raise AssertionError(f"{label} peak_concurrency mismatch")
+    if derived_metrics.get("track_source_breakdown") != expected_breakdown:
+        raise AssertionError(f"{label} track_source_breakdown mismatch")
 
 
 def run():
@@ -159,7 +202,20 @@ def run():
                 raise AssertionError("video task detection detail count mismatch")
             if any(item.get("frame_number") is None for item in video_detections.get("student_detections", []) + video_detections.get("teacher_detections", [])):
                 raise AssertionError("video task detections contain missing frame_number")
+            assert_tracking_summary(video_summary, video_detections, "video task tracking summary")
             results.append(("video_detail_integrity", True))
+            video_report_response = client.get(f"/api/tasks/{video_task_id}/report")
+            assert_status(video_report_response, 200, "video_task_report")
+            video_report_payload = video_report_response.get_json()["data"]
+            video_report_path = Config.OUTPUT_FOLDER / video_report_payload["report_filename"]
+            if not video_report_path.exists():
+                raise AssertionError("video report file missing")
+            assert_report_html_contract(
+                video_summary,
+                video_report_path.read_text(encoding="utf-8"),
+                "video report",
+            )
+            results.append(("video_report", True))
 
             stop_video_response = client.post(
                 "/api/detect/video",
@@ -213,21 +269,59 @@ def run():
             report_mtime_after = report_path.stat().st_mtime_ns
             if report_mtime_after != report_mtime_before:
                 raise AssertionError("single report was regenerated instead of reused")
+            assert_report_html_contract(
+                image_summary_payload,
+                report_path.read_text(encoding="utf-8"),
+                "single report",
+            )
             results.append(("single_report", True))
 
+            batch_summary_response = client.get(f"/api/tasks/{batch_payload['task_id']}/summary")
+            assert_status(batch_summary_response, 200, "batch_task_summary")
+            batch_summary_payload = batch_summary_response.get_json()["data"]
+            batch_task_report_response = client.get(f"/api/tasks/{batch_payload['task_id']}/report")
+            assert_status(batch_task_report_response, 200, "batch_task_report")
+            batch_task_report_payload = batch_task_report_response.get_json()["data"]
+            batch_task_report_path = Config.OUTPUT_FOLDER / batch_task_report_payload["report_filename"]
+            if not batch_task_report_path.exists():
+                raise AssertionError("batch task report file missing")
+            assert_report_html_contract(
+                batch_summary_payload,
+                batch_task_report_path.read_text(encoding="utf-8"),
+                "batch task report",
+            )
             batch_report_response = client.post(
                 "/api/tasks/reports/batch",
-                json={"task_ids": [image_data["task_id"], batch_payload["task_id"]]},
+                json={"task_ids": [image_data["task_id"], batch_payload["task_id"], video_task_id]},
             )
             assert_status(batch_report_response, 200, "batch_reports")
             batch_report_payload = batch_report_response.get_json()["data"]
+            if int(batch_report_payload.get("report_count", 0) or 0) != 3:
+                raise AssertionError(f"batch report count mismatch: {batch_report_payload}")
             zip_path = Config.OUTPUT_FOLDER / batch_report_payload["zip_filename"]
             if not zip_path.exists():
                 raise AssertionError("batch zip missing")
             with zipfile.ZipFile(zip_path) as archive:
-                names = set(archive.namelist())
-                if "readme.txt" not in names or "manifest.csv" not in names:
-                    raise AssertionError(f"batch zip missing manifest files: {names}")
+                assert_batch_archive_contract(
+                    archive,
+                    build_archive_expectations(
+                        [
+                            {
+                                "report_filename": report_payload["report_filename"],
+                                "summary": image_summary_payload,
+                            },
+                            {
+                                "report_filename": batch_task_report_payload["report_filename"],
+                                "summary": batch_summary_payload,
+                            },
+                            {
+                                "report_filename": video_report_payload["report_filename"],
+                                "summary": video_summary,
+                            },
+                        ]
+                    ),
+                    "batch zip",
+                )
             results.append(("batch_report_zip", True))
 
             history_response = client.get("/api/tasks/recent?limit=10")
@@ -238,7 +332,7 @@ def run():
             recent_image_task = next((item for item in history_payload if item.get("task_id") == image_data["task_id"]), None)
             if not recent_image_task:
                 raise AssertionError("recent task list missing image task")
-            for key in ("total_detections", "duration", "student_behavior_stats", "teacher_behavior_stats"):
+            for key in ("total_detections", "duration", "student_behavior_stats", "teacher_behavior_stats", "display_metrics", "derived_metrics"):
                 if key not in recent_image_task:
                     raise AssertionError(f"recent task missing aggregated field: {key}")
             if "assets" not in recent_image_task:
@@ -251,19 +345,21 @@ def run():
             browser_session_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(browser_session_start, 200, "browser_webcam_session_start")
             browser_task_id = browser_session_start.get_json()["data"]["task_id"]
+            sample_base64 = "data:image/jpeg;base64," + __import__("base64").b64encode(image_paths[0].read_bytes()).decode("ascii")
+            browser_frame_response = client.post(
+                "/api/detect/frame",
+                json={"image": sample_base64, "tracking_session_id": browser_task_id},
+            )
+            assert_status(browser_frame_response, 200, "browser_webcam_session_frame")
+            browser_frame_payload = browser_frame_response.get_json()["data"]
+            if not isinstance(browser_frame_payload.get("summary"), dict):
+                raise AssertionError("browser webcam detect frame missing tracked summary")
             browser_session_stop = client.post(
                 "/api/streams/webcam/browser-session/stop",
                 json={
                     "task_id": browser_task_id,
-                    "student_behavior_stats": {"reading": 2},
-                    "teacher_behavior_stats": {"head": 1},
-                    "total_detections": 3,
-                    "average_confidence": 0.7,
-                    "duration": 2.5,
-                    "processed_frames": 3,
-                    "total_frames": 3,
-                    "original_image": "data:image/jpeg;base64," + __import__("base64").b64encode(image_paths[0].read_bytes()).decode("ascii"),
-                    "annotated_image": "data:image/jpeg;base64," + __import__("base64").b64encode(image_paths[0].read_bytes()).decode("ascii"),
+                    "original_image": sample_base64,
+                    "annotated_image": sample_base64,
                 },
             )
             assert_status(browser_session_stop, 200, "browser_webcam_session_stop")
@@ -272,14 +368,20 @@ def run():
             browser_payload = browser_summary.get_json()["data"]
             if browser_payload.get("assets", {}).get("result") is None:
                 raise AssertionError("browser webcam session missing saved result asset")
+            if not isinstance(browser_payload.get("display_metrics"), dict) or browser_payload.get("display_metrics", {}).get("metric_mode") != "tracking":
+                raise AssertionError("browser webcam session summary missing tracking display metrics")
+            browser_detections = client.get(f"/api/tasks/{browser_task_id}/detections")
+            assert_status(browser_detections, 200, "browser_webcam_detections")
+            browser_detection_payload = browser_detections.get_json()["data"]
+            assert_tracking_summary(browser_payload, browser_detection_payload, "browser webcam session tracking summary")
             results.append(("browser_webcam_session", True))
             if diag_payload.get("selected"):
                 webcam_start = client.post("/api/streams/webcam/start", json={"camera_index": 0, "confidence": 0.25, "iou": 0.45})
                 if webcam_start.status_code == 400:
                     webcam_start_payload = webcam_start.get_json() or {}
                     webcam_error_code = ((webcam_start_payload.get("error") or {}).get("code") or "").strip()
-                    if webcam_error_code == "webcam_unready":
-                        results.append(("webcam_live_cycle", "blocked:webcam_unready"))
+                    if webcam_error_code in {"webcam_unready", "webcam_unavailable"}:
+                        results.append(("webcam_live_cycle", f"blocked:{webcam_error_code}"))
                         webcam_start = None
                     else:
                         assert_status(webcam_start, 200, "webcam_start")
@@ -301,9 +403,7 @@ def run():
                     webcam_detections_response = client.get(f"/api/tasks/{webcam_task_id}/detections")
                     assert_status(webcam_detections_response, 200, "webcam_detections")
                     webcam_detections_payload = webcam_detections_response.get_json()["data"]
-                    webcam_detection_count = len(webcam_detections_payload.get("student_detections", [])) + len(webcam_detections_payload.get("teacher_detections", []))
-                    if webcam_detection_count != int(webcam_summary_payload.get("total_detections", 0) or 0):
-                        raise AssertionError("webcam live detection detail count mismatch")
+                    assert_tracking_summary(webcam_summary_payload, webcam_detections_payload, "webcam live tracking summary")
                     results.append(("webcam_live_cycle", True))
             else:
                 results.append(("webcam_live_cycle", "blocked:no_camera"))

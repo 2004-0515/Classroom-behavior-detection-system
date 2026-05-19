@@ -24,6 +24,7 @@ if (-not $python) {
 }
 $env:CLASSROOM_PYTHON = $python
 $serverScript = Join-Path $root "scripts\audit_server.py"
+$verifyArchiveScript = Join-Path $root "scripts\verify_report_archive.py"
 $artifactDir = Join-Path $root "docs\_artifacts"
 New-Item -ItemType Directory -Force $artifactDir | Out-Null
 
@@ -35,6 +36,10 @@ foreach ($sampleImage in $sampleImages) {
     if (-not (Test-Path $sampleImage)) {
         throw "Required browser audit sample is missing: $sampleImage"
     }
+}
+$sampleVideo = Join-Path $root "testfile\QQ202618-01246-HD.mp4"
+if (-not (Test-Path $sampleVideo)) {
+    throw "Required browser audit sample is missing: $sampleVideo"
 }
 
 $chromeCandidates = @(
@@ -49,6 +54,8 @@ if (-not $browser) {
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
 $batchZipPath = Join-Path $artifactDir "browser-audit-batch-$timestamp.zip"
+$batchExpectationsPath = Join-Path $artifactDir "browser-audit-batch-$timestamp.expectations.json"
+$batchValidationPath = Join-Path $artifactDir "browser-audit-batch-$timestamp.validation.json"
 $outLog = Join-Path $artifactDir "browser_audit_server.out.log"
 $errLog = Join-Path $artifactDir "browser_audit_server.err.log"
 $server = $null
@@ -200,6 +207,82 @@ function Detect-ImageTask {
     return [string]$payload.data.task_id
 }
 
+function Wait-TaskCompletion {
+    param(
+        [string]$BaseUrl,
+        [string]$TaskId,
+        [int]$TimeoutSeconds = 180
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $payload = Invoke-HttpJson -Method "Get" -Url "$BaseUrl/api/tasks/$TaskId" -Label "task detail"
+        Assert-ApiSuccess $payload "task detail"
+        $task = $payload.data
+        $status = [string]$task.status
+        if ($status -eq "completed") {
+            return $task
+        }
+        if ($status -and $status -ne "processing") {
+            throw "Task $TaskId finished with unexpected status: $status"
+        }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    throw "Task $TaskId did not finish within $TimeoutSeconds seconds"
+}
+
+function Detect-BatchTask {
+    param(
+        [string]$BaseUrl,
+        [string[]]$ImagePaths
+    )
+    $content = New-Object System.Net.Http.MultipartFormDataContent
+    $fileStreams = @()
+    try {
+        foreach ($imagePath in $ImagePaths) {
+            $fileStream = [System.IO.File]::OpenRead($imagePath)
+            $fileStreams += $fileStream
+            $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+            $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("image/jpeg")
+            $content.Add($fileContent, "files", [System.IO.Path]::GetFileName($imagePath))
+        }
+        $content.Add((New-Object System.Net.Http.StringContent("0.25")), "confidence")
+        $content.Add((New-Object System.Net.Http.StringContent("0.45")), "iou")
+        $payload = Invoke-HttpJson -Method "Post" -Url "$BaseUrl/api/detect/batch" -Content $content -Label "detect batch"
+    } finally {
+        foreach ($fileStream in $fileStreams) {
+            $fileStream.Dispose()
+        }
+    }
+    Assert-ApiSuccess $payload "detect batch"
+    $taskId = [string]$payload.data.task_id
+    [void](Wait-TaskCompletion $BaseUrl $taskId 60)
+    return $taskId
+}
+
+function Detect-VideoTask {
+    param(
+        [string]$BaseUrl,
+        [string]$VideoPath
+    )
+    $content = New-Object System.Net.Http.MultipartFormDataContent
+    $fileStream = [System.IO.File]::OpenRead($VideoPath)
+    try {
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("video/mp4")
+        $content.Add($fileContent, "file", [System.IO.Path]::GetFileName($VideoPath))
+        $content.Add((New-Object System.Net.Http.StringContent("0.25")), "confidence")
+        $content.Add((New-Object System.Net.Http.StringContent("0.45")), "iou")
+        $content.Add((New-Object System.Net.Http.StringContent("8")), "frame_skip")
+        $payload = Invoke-HttpJson -Method "Post" -Url "$BaseUrl/api/detect/video" -Content $content -Label "detect video"
+    } finally {
+        $fileStream.Dispose()
+    }
+    Assert-ApiSuccess $payload "detect video"
+    $taskId = [string]$payload.data.task_id
+    [void](Wait-TaskCompletion $BaseUrl $taskId 180)
+    return $taskId
+}
+
 function Generate-Report {
     param(
         [string]$BaseUrl,
@@ -208,6 +291,48 @@ function Generate-Report {
     $payload = Invoke-HttpJson -Method "Get" -Url "$BaseUrl/api/tasks/$TaskId/report" -Label "generate report"
     Assert-ApiSuccess $payload "generate report"
     return $payload.data
+}
+
+function Get-TaskSummary {
+    param(
+        [string]$BaseUrl,
+        [string]$TaskId
+    )
+    $payload = Invoke-HttpJson -Method "Get" -Url "$BaseUrl/api/tasks/$TaskId/summary" -Label "task summary"
+    Assert-ApiSuccess $payload "task summary"
+    return $payload.data
+}
+
+function Build-ReportContract {
+    param(
+        [string]$BaseUrl,
+        [string]$TaskId,
+        [string]$Label
+    )
+    $summary = Get-TaskSummary $baseUrl $taskId
+    $reportInfo = Generate-Report $baseUrl $taskId
+    $reportHtmlPath = Join-Path $artifactDir "browser-audit-report-$Label-$timestamp.html"
+    $reportSummaryPath = Join-Path $artifactDir "browser-audit-report-$Label-$timestamp.summary.json"
+    $reportValidationPath = Join-Path $artifactDir "browser-audit-report-$Label-$timestamp.validation.json"
+    $validation = Verify-ReportHtml `
+        -BaseUrl $baseUrl `
+        -ReportUrl ([string]$reportInfo.report_url) `
+        -Summary $summary `
+        -Label "$Label report" `
+        -HtmlPath $reportHtmlPath `
+        -SummaryPath $reportSummaryPath `
+        -ValidationPath $reportValidationPath
+    return [pscustomobject]@{
+        task_id = $taskId
+        summary = $summary
+        report_url = [string]$reportInfo.report_url
+        report_filename = [string]$reportInfo.report_filename
+        label = $Label
+        report_html_path = $reportHtmlPath
+        report_summary_path = $reportSummaryPath
+        report_validation_path = $reportValidationPath
+        html_validation = $validation
+    }
 }
 
 function Export-BatchReports {
@@ -243,40 +368,82 @@ function Download-File {
     }
 }
 
-function Assert-ReportHtml {
+function Write-Utf8TextFile {
+    param(
+        [string]$Path,
+        [string]$Text
+    )
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom)
+}
+
+function Write-Utf8JsonFile {
+    param(
+        [string]$Path,
+        [object]$Payload,
+        [int]$Depth = 10
+    )
+    $json = $Payload | ConvertTo-Json -Depth $Depth
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+}
+
+function Verify-ReportHtml {
     param(
         [string]$BaseUrl,
-        [string]$ReportUrl
+        [string]$ReportUrl,
+        [object]$Summary,
+        [string]$Label,
+        [string]$HtmlPath,
+        [string]$SummaryPath,
+        [string]$ValidationPath
     )
     $encodedReport = [uri]::EscapeDataString($ReportUrl)
     $response = Invoke-WebRequest -UseBasicParsing "$BaseUrl/audit/login-and-go?next=$encodedReport" -TimeoutSec 15
-    $html = [string]$response.Content
-    foreach ($marker in @("report-toolbar", "preview-box", "analysis-grid")) {
-        if ($html -notmatch [regex]::Escape($marker)) {
-            throw "Report HTML is missing expected marker: $marker"
-        }
+    if ($response.StatusCode -ne 200) {
+        throw "report HTML unavailable: $($response.StatusCode)"
     }
+    Write-Utf8TextFile -Path $HtmlPath -Text ([string]$response.Content)
+    Write-Utf8JsonFile -Path $SummaryPath -Payload $Summary
+    $output = & $python $verifyArchiveScript `
+        --html-path $HtmlPath `
+        --summary-path $SummaryPath `
+        --label $Label `
+        --required-marker report-toolbar `
+        --required-marker preview-box `
+        --required-marker analysis-grid 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ($output -join [Environment]::NewLine)
+    }
+    $outputText = ($output -join [Environment]::NewLine)
+    $payload = $outputText | ConvertFrom-Json
+    Write-Utf8JsonFile -Path $ValidationPath -Payload $payload
+    return $payload
 }
 
-function Assert-BatchArchive {
-    param([string]$ZipPath)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
-    try {
-        $names = @($archive.Entries | ForEach-Object { $_.FullName })
-        if ($names -notcontains "readme.txt") {
-            throw "Batch archive missing readme.txt"
+function Verify-BatchArchive {
+    param(
+        [string]$ZipPath,
+        [object[]]$ExpectedReports = @(),
+        [string]$Label = "browser visual audit batch archive",
+        [string]$ExpectationsPath,
+        [string]$ValidationPath
+    )
+    $expectations = @($ExpectedReports | ForEach-Object {
+        [ordered]@{
+            report_filename = [string]$_.report_filename
+            summary = $_.summary
         }
-        if ($names -notcontains "manifest.csv") {
-            throw "Batch archive missing manifest.csv"
-        }
-        $reportCount = @($names | Where-Object { $_ -like "report-*.html" }).Count
-        if ($reportCount -lt 2) {
-            throw "Batch archive does not contain enough report HTML files"
-        }
-    } finally {
-        $archive.Dispose()
+    })
+    Write-Utf8JsonFile -Path $ExpectationsPath -Payload $expectations
+    $output = & $python $verifyArchiveScript --zip-path $ZipPath --expectations-path $ExpectationsPath --label $Label 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ($output -join [Environment]::NewLine)
     }
+    $outputText = ($output -join [Environment]::NewLine)
+    $payload = $outputText | ConvertFrom-Json
+    Write-Utf8JsonFile -Path $ValidationPath -Payload $payload
+    return $payload
 }
 
 try {
@@ -294,40 +461,77 @@ try {
 
     Login-AuditSession $baseUrl
     $taskId1 = Detect-ImageTask $BaseUrl $sampleImages[0]
-    $taskId2 = Detect-ImageTask $BaseUrl $sampleImages[1]
-    $reportInfo = Generate-Report $baseUrl $taskId1
-    Assert-ReportHtml $baseUrl ([string]$reportInfo.report_url)
+    $batchTaskId = Detect-BatchTask $BaseUrl $sampleImages
+    $videoTaskId = Detect-VideoTask $BaseUrl $sampleVideo
+    $imageReport = Build-ReportContract $baseUrl $taskId1 "image"
+    $batchReport = Build-ReportContract $baseUrl $batchTaskId "batch"
+    $videoReport = Build-ReportContract $baseUrl $videoTaskId "video"
 
-    $batchInfo = Export-BatchReports $baseUrl @($taskId1, $taskId2)
+    $batchInfo = Export-BatchReports $baseUrl @($taskId1, $batchTaskId, $videoTaskId)
     Download-File "$baseUrl$([string]$batchInfo.zip_url)" $batchZipPath
-    Assert-BatchArchive $batchZipPath
+    if ([int]$batchInfo.report_count -ne 3) {
+        throw "Batch archive report_count mismatch: $($batchInfo.report_count)"
+    }
+    $expectedReports = @($imageReport, $batchReport, $videoReport)
+    $batchValidation = Verify-BatchArchive `
+        -ZipPath $batchZipPath `
+        -ExpectedReports $expectedReports `
+        -ExpectationsPath $batchExpectationsPath `
+        -ValidationPath $batchValidationPath
 
     $loginShot = Join-Path $artifactDir "browser-audit-login.png"
     $dashboardShot = Join-Path $artifactDir "browser-audit-dashboard.png"
     $webcamShot = Join-Path $artifactDir "browser-audit-webcam.png"
     $reportShot = Join-Path $artifactDir "browser-audit-report.png"
+    $videoReportShot = Join-Path $artifactDir "browser-audit-video-report.png"
 
     Capture-Page "$baseUrl/login" $loginShot "1366,900"
     Capture-Page "$baseUrl/audit/login-and-go?next=%2F" $dashboardShot "1440,1000"
     Capture-Page "$baseUrl/audit/login-and-go?next=%2F%3Faudit_mode%3Dwebcam" $webcamShot "1440,1000"
-    $encodedReport = [uri]::EscapeDataString([string]$reportInfo.report_url)
+    $encodedReport = [uri]::EscapeDataString([string]$imageReport.report_url)
     Capture-Page "$baseUrl/audit/login-and-go?next=$encodedReport" $reportShot "1440,1000"
+    $encodedVideoReport = [uri]::EscapeDataString([string]$videoReport.report_url)
+    Capture-Page "$baseUrl/audit/login-and-go?next=$encodedVideoReport" $videoReportShot "1440,1000"
 
     $summary = [ordered]@{
         generated_at = (Get-Date).ToString("s")
         browser = $browser
         python = $python
         base_url = $baseUrl
-        task_ids = @($taskId1, $taskId2)
-        report_url = [string]$reportInfo.report_url
+        task_ids = @($taskId1, $batchTaskId, $videoTaskId)
+        report_url = [string]$imageReport.report_url
+        video_report_url = [string]$videoReport.report_url
         batch_zip_url = [string]$batchInfo.zip_url
         batch_zip_path = (Resolve-Path $batchZipPath).Path
+        batch_zip_expectations_path = (Resolve-Path $batchExpectationsPath).Path
+        batch_zip_validation_path = (Resolve-Path $batchValidationPath).Path
         report_markers_verified = $true
+        report_metric_cards_verified = [int]$imageReport.html_validation.metric_count -gt 0
+        batch_task_report_metric_cards_verified = [int]$batchReport.html_validation.metric_count -gt 0
+        video_report_metric_cards_verified = [int]$videoReport.html_validation.metric_count -gt 0
+        report_validation_paths = [ordered]@{
+            image = (Resolve-Path $imageReport.report_validation_path).Path
+            batch = (Resolve-Path $batchReport.report_validation_path).Path
+            video = (Resolve-Path $videoReport.report_validation_path).Path
+        }
+        report_summary_paths = [ordered]@{
+            image = (Resolve-Path $imageReport.report_summary_path).Path
+            batch = (Resolve-Path $batchReport.report_summary_path).Path
+            video = (Resolve-Path $videoReport.report_summary_path).Path
+        }
+        report_html_paths = [ordered]@{
+            image = (Resolve-Path $imageReport.report_html_path).Path
+            batch = (Resolve-Path $batchReport.report_html_path).Path
+            video = (Resolve-Path $videoReport.report_html_path).Path
+        }
+        batch_report_entries_verified = [int]$batchValidation.report_count
+        batch_report_filenames_verified = @($batchValidation.verified_reports)
         screenshots = @(
             (Resolve-Path $loginShot).Path,
             (Resolve-Path $dashboardShot).Path,
             (Resolve-Path $webcamShot).Path,
-            (Resolve-Path $reportShot).Path
+            (Resolve-Path $reportShot).Path,
+            (Resolve-Path $videoReportShot).Path
         )
     }
     $summaryPath = Join-Path $artifactDir "browser-visual-audit.json"
