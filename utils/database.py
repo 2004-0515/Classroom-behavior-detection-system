@@ -47,6 +47,7 @@ class Database:
                 timestamp REAL,
                 behavior TEXT NOT NULL,
                 confidence REAL,
+                track_id INTEGER,
                 bbox_x1 REAL,
                 bbox_y1 REAL,
                 bbox_x2 REAL,
@@ -64,6 +65,7 @@ class Database:
                 timestamp REAL,
                 behavior TEXT NOT NULL,
                 confidence REAL,
+                track_id INTEGER,
                 bbox_x1 REAL,
                 bbox_y1 REAL,
                 bbox_x2 REAL,
@@ -82,6 +84,8 @@ class Database:
                 total_detections INTEGER,
                 average_confidence REAL,
                 duration REAL,
+                display_metrics TEXT,
+                derived_metrics TEXT,
                 FOREIGN KEY (task_id) REFERENCES detection_records (task_id)
             )
         ''')
@@ -102,6 +106,11 @@ class Database:
             )
         ''')
 
+        self._ensure_column(cursor, "student_detections", "track_id", "INTEGER")
+        self._ensure_column(cursor, "teacher_detections", "track_id", "INTEGER")
+        self._ensure_column(cursor, "detection_summary", "display_metrics", "TEXT")
+        self._ensure_column(cursor, "detection_summary", "derived_metrics", "TEXT")
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_detection_records_task_created "
             "ON detection_records (task_id, created_at DESC)"
@@ -111,8 +120,16 @@ class Database:
             "ON student_detections (task_id, frame_number)"
         )
         cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_student_detections_task_track "
+            "ON student_detections (task_id, track_id)"
+        )
+        cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_teacher_detections_task_frame "
             "ON teacher_detections (task_id, frame_number)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_teacher_detections_task_track "
+            "ON teacher_detections (task_id, track_id)"
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_task_assets_task_role_frame "
@@ -121,6 +138,13 @@ class Database:
         
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _ensure_column(cursor, table_name: str, column_name: str, definition: str):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        existing = {row[1] for row in cursor.fetchall()}
+        if column_name not in existing:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
     
     def create_task(self, task_id: str, task_type: str, file_name: str = None) -> bool:
         """创建新的检测任务"""
@@ -172,9 +196,9 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO student_detections 
-            (task_id, frame_number, timestamp, behavior, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (task_id, frame_number, timestamp, behavior, confidence, *bbox))
+            (task_id, frame_number, timestamp, behavior, confidence, track_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (task_id, frame_number, timestamp, behavior, confidence, None, *bbox))
         conn.commit()
         conn.close()
     
@@ -185,9 +209,9 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO teacher_detections 
-            (task_id, frame_number, timestamp, behavior, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (task_id, frame_number, timestamp, behavior, confidence, *bbox))
+            (task_id, frame_number, timestamp, behavior, confidence, track_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (task_id, frame_number, timestamp, behavior, confidence, None, *bbox))
         conn.commit()
         conn.close()
 
@@ -203,6 +227,7 @@ class Database:
                 timestamp,
                 item["behavior"],
                 item["confidence"],
+                item.get("track_id"),
                 *item["bbox"],
             )
             for item in detections
@@ -213,8 +238,8 @@ class Database:
         cursor.executemany(
             f'''
                 INSERT INTO {table_name}
-                (task_id, frame_number, timestamp, behavior, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (task_id, frame_number, timestamp, behavior, confidence, track_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             rows,
         )
@@ -232,7 +257,8 @@ class Database:
         self._save_detections_bulk("teacher_detections", task_id, frame_number, timestamp, detections)
     
     def save_summary(self, task_id: str, student_stats: Dict, teacher_stats: Dict,
-                     total_detections: int, avg_confidence: float, duration: float):
+                     total_detections: int, avg_confidence: float, duration: float,
+                     display_metrics: Dict | None = None, derived_metrics: Dict | None = None):
         """保存检测摘要"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -246,13 +272,15 @@ class Database:
         cursor.execute('''
             INSERT OR REPLACE INTO detection_summary 
             (task_id, student_behavior_stats, teacher_behavior_stats, 
-             total_detections, average_confidence, duration)
-            VALUES (?, ?, ?, ?, ?, ?)
+             total_detections, average_confidence, duration, display_metrics, derived_metrics)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (task_id, json.dumps(student_stats, ensure_ascii=False), 
               json.dumps(teacher_stats, ensure_ascii=False),
               int(total_detections) if total_detections else 0, 
               float(avg_confidence) if avg_confidence else 0.0, 
-              float(duration) if duration else 0.0))
+              float(duration) if duration else 0.0,
+              json.dumps(display_metrics or {}, ensure_ascii=False),
+              json.dumps(derived_metrics or {}, ensure_ascii=False)))
         conn.commit()
         conn.close()
     
@@ -284,13 +312,10 @@ class Database:
         
         if summary_row:
             summary = dict(summary_row)
-            # 安全地解析JSON
-            try:
-                summary['student_behavior_stats'] = json.loads(summary['student_behavior_stats']) if summary.get('student_behavior_stats') else {}
-                summary['teacher_behavior_stats'] = json.loads(summary['teacher_behavior_stats']) if summary.get('teacher_behavior_stats') else {}
-            except (json.JSONDecodeError, TypeError):
-                summary['student_behavior_stats'] = {}
-                summary['teacher_behavior_stats'] = {}
+            summary["student_behavior_stats"] = self._parse_json_stats(summary.get("student_behavior_stats"))
+            summary["teacher_behavior_stats"] = self._parse_json_stats(summary.get("teacher_behavior_stats"))
+            summary["display_metrics"] = self._parse_json_stats(summary.get("display_metrics"))
+            summary["derived_metrics"] = self._parse_json_stats(summary.get("derived_metrics"))
         else:
             summary = {}
         
@@ -322,6 +347,8 @@ class Database:
                        ds.total_detections,
                        ds.average_confidence,
                        ds.duration,
+                       ds.display_metrics,
+                       ds.derived_metrics,
                        ds.student_behavior_stats,
                        ds.teacher_behavior_stats
                 FROM detection_records dr
@@ -339,6 +366,8 @@ class Database:
             item = dict(row)
             item["student_behavior_stats"] = self._parse_json_stats(item.get("student_behavior_stats"))
             item["teacher_behavior_stats"] = self._parse_json_stats(item.get("teacher_behavior_stats"))
+            item["display_metrics"] = self._parse_json_stats(item.get("display_metrics"))
+            item["derived_metrics"] = self._parse_json_stats(item.get("derived_metrics"))
             item["total_detections"] = int(item.get("total_detections") or 0)
             item["average_confidence"] = float(item.get("average_confidence") or 0.0)
             item["duration"] = float(item.get("duration") or 0.0)
@@ -354,7 +383,7 @@ class Database:
             if frame_number is None:
                 cursor.execute(
                     f'''
-                        SELECT frame_number, timestamp, behavior, confidence,
+                        SELECT frame_number, timestamp, behavior, confidence, track_id,
                                bbox_x1, bbox_y1, bbox_x2, bbox_y2
                         FROM {table_name}
                         WHERE task_id = ?
@@ -365,7 +394,7 @@ class Database:
             else:
                 cursor.execute(
                     f'''
-                        SELECT frame_number, timestamp, behavior, confidence,
+                        SELECT frame_number, timestamp, behavior, confidence, track_id,
                                bbox_x1, bbox_y1, bbox_x2, bbox_y2
                         FROM {table_name}
                         WHERE task_id = ? AND frame_number = ?
@@ -373,8 +402,31 @@ class Database:
                     ''',
                     (task_id, frame_number),
                 )
+            detection_rows = cursor.fetchall()
             items = []
-            for row in cursor.fetchall():
+            track_ranges: Dict[int, Dict[str, int]] = {}
+            cursor.execute(
+                f'''
+                    SELECT track_id,
+                           MIN(frame_number) AS first_frame,
+                           MAX(frame_number) AS last_frame,
+                           COUNT(*) AS hits
+                    FROM {table_name}
+                    WHERE task_id = ? AND track_id IS NOT NULL
+                    GROUP BY track_id
+                ''',
+                (task_id,),
+            )
+            for track_row in cursor.fetchall():
+                info = dict(track_row)
+                if info.get("track_id") is None:
+                    continue
+                track_ranges[int(info["track_id"])] = {
+                    "track_first_frame": int(info.get("first_frame") or 0),
+                    "track_last_frame": int(info.get("last_frame") or 0),
+                    "track_hits": int(info.get("hits") or 0),
+                }
+            for row in detection_rows:
                 item = dict(row)
                 item["bbox"] = [
                     float(item.pop("bbox_x1")),
@@ -383,6 +435,12 @@ class Database:
                     float(item.pop("bbox_y2")),
                 ]
                 item["confidence"] = float(item.get("confidence") or 0.0)
+                if item.get("track_id") is not None:
+                    item["track_id"] = int(item["track_id"])
+                    lifecycle = track_ranges.get(item["track_id"], {})
+                    item.update(lifecycle)
+                    if lifecycle:
+                        item["track_span_frames"] = int(lifecycle["track_last_frame"] - lifecycle["track_first_frame"] + 1)
                 items.append(item)
             return items
 

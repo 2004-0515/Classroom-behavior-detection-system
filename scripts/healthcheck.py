@@ -224,7 +224,7 @@ def check_runtime_helpers():
         return ["未找到可用 python，无法执行运行时 helper 自检"]
 
     failures = []
-    for script_name in ["runtime_paths_test.py", "model_integrity_test.py"]:
+    for script_name in ["runtime_paths_test.py", "model_integrity_test.py", "tracking_runtime_test.py", "tracking_fallback_test.py", "summary_metrics_test.py"]:
         result = subprocess.run(
             [str(python), str(ROOT / "scripts" / script_name)],
             cwd=ROOT,

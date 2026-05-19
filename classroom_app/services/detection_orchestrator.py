@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import time
 import uuid
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import cv2
 import numpy as np
 
 from classroom_app.core.errors import StreamError
+from classroom_app.core.summary_metrics import build_summary_payload
 from config import Config
 
 
@@ -27,12 +29,13 @@ class DetectionOrchestrator:
     def start_video_detection(self, storage, confidence, iou, frame_skip):
         return self.detection_service.start_video_detection(storage, confidence, iou, frame_skip)
 
-    def detect_frame_payload(self, image_data):
-        return self.detection_service.detect_frame_payload(image_data)
+    def detect_frame_payload(self, image_data, tracking_session_id=None):
+        return self.detection_service.detect_frame_payload(image_data, tracking_session_id=tracking_session_id)
 
     def create_browser_webcam_session(self):
         task_id = str(uuid.uuid4())
         self.task_service.create_task(task_id, "webcam", "browser_camera")
+        self.detection_service.create_browser_tracking_session(task_id)
         return {"task_id": task_id}
 
     def finalize_browser_webcam_session(self, payload: dict):
@@ -46,11 +49,22 @@ class DetectionOrchestrator:
         if str(task.get("status") or "").lower() != "processing":
             raise StreamError("浏览器摄像头会话已结束，不能重复提交", code="webcam_unready", status=409)
 
-        processed_frames = self._coerce_non_negative_int(payload.get("processed_frames"), "processed_frames")
-        total_frames = self._coerce_non_negative_int(
-            payload.get("total_frames") if payload.get("total_frames") is not None else processed_frames,
-            "total_frames",
-        )
+        tracking_session = self.detection_service.pop_browser_tracking_session(task_id)
+        tracked_summary = None
+        if tracking_session:
+            processed_frames = int(tracking_session.get("processed_frames") or 0)
+            total_frames = processed_frames
+            tracked_summary = tracking_session["accumulator"].build_payload(
+                processed_frames=processed_frames,
+                total_frames=total_frames,
+                duration=max(0.0, time.time() - float(tracking_session.get("started_at") or time.time())),
+            )
+        else:
+            processed_frames = self._coerce_non_negative_int(payload.get("processed_frames"), "processed_frames")
+            total_frames = self._coerce_non_negative_int(
+                payload.get("total_frames") if payload.get("total_frames") is not None else processed_frames,
+                "total_frames",
+            )
         if total_frames < processed_frames:
             self._mark_browser_webcam_failed(
                 task_id,
@@ -60,13 +74,16 @@ class DetectionOrchestrator:
             )
             raise StreamError("浏览器摄像头会话帧计数无效", code="webcam_unready", status=400)
 
-        summary = {
-            "student_behavior_stats": self._coerce_stats_map(payload.get("student_behavior_stats")),
-            "teacher_behavior_stats": self._coerce_stats_map(payload.get("teacher_behavior_stats")),
-            "total_detections": self._coerce_non_negative_int(payload.get("total_detections"), "total_detections"),
-            "average_confidence": self._coerce_non_negative_float(payload.get("average_confidence"), "average_confidence"),
-            "duration": self._coerce_non_negative_float(payload.get("duration"), "duration"),
-        }
+        summary = tracked_summary or build_summary_payload(
+            task_type="webcam",
+            student_behavior_stats=self._coerce_stats_map(payload.get("student_behavior_stats")),
+            teacher_behavior_stats=self._coerce_stats_map(payload.get("teacher_behavior_stats")),
+            total_detections=self._coerce_non_negative_int(payload.get("total_detections"), "total_detections"),
+            average_confidence=self._coerce_non_negative_float(payload.get("average_confidence"), "average_confidence"),
+            duration=self._coerce_non_negative_float(payload.get("duration"), "duration"),
+            processed_frames=processed_frames,
+            total_frames=total_frames,
+        )
         failure_reason = str(payload.get("failure_reason") or "").strip()
         if failure_reason:
             self._mark_browser_webcam_failed(
@@ -161,6 +178,8 @@ class DetectionOrchestrator:
                 "total_detections": 0,
                 "average_confidence": 0.0,
                 "duration": 0.0,
+                "display_metrics": {},
+                "derived_metrics": {},
             }),
         )
         self.task_service.update_status(task_id, "failed", processed_frames, total_frames)
