@@ -57,6 +57,7 @@ export function trapDialogFocus(event, dialog, getActiveElement = () => document
 export function openDialogById({
     els,
     id,
+    opener,
     dialogOpeners,
     getActiveElement,
     setActiveDialogId,
@@ -65,8 +66,8 @@ export function openDialogById({
     const node = els[id];
     const dialog = getDialogCard(els, id);
     if (!node || !dialog) return;
-    const opener = getActiveElement();
-    dialogOpeners.set(id, opener);
+    const resolvedOpener = opener || getActiveElement();
+    dialogOpeners.set(id, resolvedOpener);
     node.classList.remove("hidden");
     node.setAttribute("aria-hidden", "false");
     setActiveDialogId(id);

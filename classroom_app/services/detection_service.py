@@ -330,10 +330,17 @@ class DetectionService:
     def stop_video_task(self, task_id):
         session = self.session_manager.get_video_session(task_id)
         if not session:
-            raise TaskExecutionError("任务不存在或已结束", code="task_not_found", status=404)
+            task = self.task_service.get_task(task_id)
+            if not task:
+                raise TaskExecutionError("任务不存在或已结束", code="task_not_found", status=404)
+            if str(task.get("status") or "").lower() == "processing":
+                raise TaskExecutionError("视频任务正在收尾，请稍后刷新任务状态", code="task_stop_pending", status=409)
+            return {"already_stopped": True, "status": task.get("status")}
+        already_stopped = session.stop_event.is_set()
         session.stop_event.set()
         stats = session.stats
         self.task_service.update_status(task_id, Config.VIDEO_STOP_STATUS, stats.get("processed_frames", 0), stats.get("total_frames", 0))
+        return {"already_stopped": already_stopped, "status": Config.VIDEO_STOP_STATUS}
 
     def get_video_metrics(self, task_id):
         session = self.session_manager.get_video_session(task_id)

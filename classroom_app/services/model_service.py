@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,7 @@ class ModelService:
         self.model_root = Path(Config.MODEL_FOLDER).resolve()
         self._manifest_entries = load_manifest(self.model_root)
         self._scan_cache = {"models": [], "expires_at": 0.0}
+        self._load_lock = threading.Lock()
         self._env_selected_models = {
             "student": self._resolve_known_model(self._get_env_model_ref("student")),
             "teacher": self._resolve_known_model(self._get_env_model_ref("teacher")),
@@ -142,36 +144,43 @@ class ModelService:
         self.detector.update_parameters(confidence, iou, img_size)
 
     def load_model(self, model_type, model_ref):
-        model_path = self._resolve_requested_model(model_ref)
-        selected_path = self._env_selected_models.get(model_type)
-        if self._env_model_lock_enabled and selected_path and Path(model_path).resolve() != Path(selected_path).resolve():
-            role_name = "学生" if model_type == "student" else "教师"
-            raise ModelError(f"{role_name}模型已由当前启动入口固定，不能在运行中切换", code="model_locked", status=409)
-        success = self.detector.load_model(model_type, model_path)
-        if not success:
-            raise ModelError("模型加载失败", code="model_load_failed", status=500)
+        with self._load_lock:
+            model_path = self._resolve_requested_model(model_ref)
+            selected_path = self._env_selected_models.get(model_type)
+            if self._env_model_lock_enabled and selected_path and Path(model_path).resolve() != Path(selected_path).resolve():
+                role_name = "学生" if model_type == "student" else "教师"
+                raise ModelError(f"{role_name}模型已由当前启动入口固定，不能在运行中切换", code="model_locked", status=409)
 
-        storage_ref = self._to_storage_reference(model_path)
-        if self._env_model_lock_enabled and selected_path:
-            self._model_selection_meta[model_type] = self._build_selection_meta(
-                model_type,
-                selected_path,
-                "env_pin",
-                requested_ref=self._get_env_model_ref(model_type),
-                locked=True,
-            )
-        else:
-            if model_type == "student":
-                self.config_service.save_last_models(student_model=storage_ref)
+            current_info = self.detector.get_model_info(model_type)
+            current_path = self._resolve_known_model(current_info.get("path") or current_info.get("relative_path"))
+            if current_info.get("loaded") and current_path and Path(current_path).resolve() == Path(model_path).resolve():
+                return True, model_path
+
+            success = self.detector.load_model(model_type, model_path)
+            if not success:
+                raise ModelError("模型加载失败", code="model_load_failed", status=500)
+
+            storage_ref = self._to_storage_reference(model_path)
+            if self._env_model_lock_enabled and selected_path:
+                self._model_selection_meta[model_type] = self._build_selection_meta(
+                    model_type,
+                    selected_path,
+                    "env_pin",
+                    requested_ref=self._get_env_model_ref(model_type),
+                    locked=True,
+                )
             else:
-                self.config_service.save_last_models(teacher_model=storage_ref)
-            self._model_selection_meta[model_type] = self._build_selection_meta(
-                model_type,
-                model_path,
-                "manual_selection",
-                requested_ref=storage_ref,
-            )
-        return True, model_path
+                if model_type == "student":
+                    self.config_service.save_last_models(student_model=storage_ref)
+                else:
+                    self.config_service.save_last_models(teacher_model=storage_ref)
+                self._model_selection_meta[model_type] = self._build_selection_meta(
+                    model_type,
+                    model_path,
+                    "manual_selection",
+                    requested_ref=storage_ref,
+                )
+            return True, model_path
 
     def _resolve_requested_model(self, model_ref):
         candidate, _ = resolve_model_candidate(model_ref, self.model_root)

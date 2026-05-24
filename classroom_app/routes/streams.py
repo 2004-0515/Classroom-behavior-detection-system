@@ -26,8 +26,9 @@ def _internal_error(message: str, code: str, exc: Exception):
 @login_required
 def stop_video(task_id):
     try:
-        _services().detect.stop_video_task(task_id)
-        return api_success({}, "已请求停止视频检测")
+        result = _services().detect.stop_video_task(task_id) or {}
+        message = "视频任务已处于停止态" if result.get("already_stopped") else "已请求停止视频检测"
+        return api_success(result, message)
     except AppError as exc:
         return api_error_from_exception(exc)
 

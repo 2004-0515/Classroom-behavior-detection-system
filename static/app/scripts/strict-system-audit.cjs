@@ -1197,6 +1197,136 @@ async function auditImageFlow(ctx) {
     }
 }
 
+async function auditInteractionChaosFlow(ctx) {
+    const { audit, page, flowState } = ctx;
+    flowState.stepLog.push('进入单图模式并执行重复点击与同模式切换压力场景');
+    await openAuthenticatedPage(page, audit.baseUrl, 'image');
+
+    const requestCounts = {
+        detectImage: 0,
+        report: 0,
+        export: 0,
+    };
+    page.on('request', (request) => {
+        if (!request.url().startsWith(audit.baseOrigin)) {
+            return;
+        }
+        const pathname = new URL(request.url()).pathname;
+        if (request.method() === 'POST' && pathname === '/api/detect/image') {
+            requestCounts.detectImage += 1;
+        } else if (request.method() === 'GET' && /\/api\/tasks\/[^/]+\/report$/.test(pathname)) {
+            requestCounts.report += 1;
+        } else if (request.method() === 'POST' && pathname === '/api/tasks/reports/batch') {
+            requestCounts.export += 1;
+        }
+    });
+
+    const beforeHistory = await countHistoryTasks(page);
+    await page.locator('#fileInput').setInputFiles(SAMPLE_FILES.imageA);
+    await page.waitForSelector('#selectedFiles .file-chip strong', { timeout: 10000 });
+    flowState.stepLog.push('连续触发两次单图检测提交');
+    await page.evaluate(() => {
+        const button = document.getElementById('runBtn');
+        button.click();
+        button.click();
+    });
+    await page.waitForFunction(() => {
+        const image = document.getElementById('resultImage');
+        const reportLink = document.getElementById('reportLink');
+        return image && image.getAttribute('src') && reportLink && reportLink.getAttribute('aria-disabled') === 'false';
+    }, undefined, { timeout: 60000 });
+    await waitForHistoryIncrease(page, beforeHistory, 20000);
+    if (requestCounts.detectImage !== 1) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '连续点击开始检测时，前端只应发出一次 /api/detect/image 请求。',
+            observed: `实际发出了 ${requestCounts.detectImage} 次 /api/detect/image 请求。`,
+            missing_regression: '现有严格审计只覆盖单次点击 happy path，没有验证重复点击时的请求去重。',
+        });
+    }
+
+    flowState.stepLog.push('重复点击当前激活模式，确认不会清空正在展示的结果');
+    const previewBefore = await page.evaluate(() => ({
+        imageSrc: document.getElementById('resultImage')?.getAttribute('src') || '',
+        reportEnabled: document.getElementById('reportLink')?.getAttribute('aria-disabled') === 'false',
+    }));
+    await page.click('.nav-item[data-mode="image"]');
+    await wait(500);
+    const previewAfter = await page.evaluate(() => ({
+        imageSrc: document.getElementById('resultImage')?.getAttribute('src') || '',
+        reportEnabled: document.getElementById('reportLink')?.getAttribute('aria-disabled') === 'false',
+    }));
+    if (!previewBefore.imageSrc || previewAfter.imageSrc !== previewBefore.imageSrc || !previewAfter.reportEnabled) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '点击当前已激活的模式标签不应清空当前任务结果或让报告按钮失效。',
+            observed: `切回同模式后预览状态异常：before=${JSON.stringify(previewBefore)} after=${JSON.stringify(previewAfter)}`,
+            missing_regression: '现有严格审计没有覆盖同模式重复点击导航导致的前端状态重置。',
+        });
+    }
+
+    flowState.stepLog.push('连续触发两次报告打开');
+    const reportCountBefore = requestCounts.report;
+    await clearOpenedUrls(page);
+    const reportResponsePromise = page.waitForResponse(
+        (response) => /\/api\/tasks\/[^/]+\/report$/.test(new URL(response.url()).pathname) && response.request().method() === 'GET',
+        { timeout: 30000 },
+    );
+    await page.evaluate(() => {
+        const link = document.getElementById('reportLink');
+        link.click();
+        link.click();
+    });
+    await reportResponsePromise;
+    await wait(700);
+    const reportOpenedUrls = await readOpenedUrls(page);
+    const reportRequestDelta = requestCounts.report - reportCountBefore;
+    if (reportRequestDelta !== 1 || reportOpenedUrls.length !== 1) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '连续点击报告按钮时，只应生成一次报告请求并只打开一个报告地址。',
+            observed: `report 请求增量=${reportRequestDelta}，window.open 次数=${reportOpenedUrls.length}，urls=${JSON.stringify(reportOpenedUrls)}`,
+            missing_regression: '现有严格审计只验证报告能打开，没有校验双击时的请求幂等和单次 window.open。',
+        });
+    }
+
+    flowState.stepLog.push('选择当前历史任务并连续触发两次批量导出');
+    await page.click('#historySelectShowcaseBtn');
+    await page.waitForFunction(() => {
+        const meta = document.getElementById('historySelectionMeta');
+        return meta && !/未选择任务/.test(meta.innerText || '');
+    }, undefined, { timeout: 10000 });
+    const exportCountBefore = requestCounts.export;
+    await clearOpenedUrls(page);
+    const exportResponsePromise = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === '/api/tasks/reports/batch' && response.request().method() === 'POST',
+        { timeout: 30000 },
+    );
+    await page.evaluate(() => {
+        const button = document.getElementById('historyExportSelectedBtn');
+        button.click();
+        button.click();
+    });
+    await exportResponsePromise;
+    await wait(700);
+    const exportOpenedUrls = await readOpenedUrls(page);
+    const exportRequestDelta = requestCounts.export - exportCountBefore;
+    if (exportRequestDelta !== 1 || exportOpenedUrls.length !== 1) {
+        addIssue(audit, flowState, {
+            severity: 'major',
+            repro_steps: [...flowState.stepLog],
+            expected: '连续点击批量导出时，只应发起一次导出请求并只打开一个压缩包地址。',
+            observed: `export 请求增量=${exportRequestDelta}，window.open 次数=${exportOpenedUrls.length}，urls=${JSON.stringify(exportOpenedUrls)}`,
+            missing_regression: '现有严格审计没有覆盖历史批量导出双击时的前端门闩和单次打开行为。',
+        });
+    }
+
+    await captureScreenshot(page, flowState, 'interaction-chaos', { fullPage: true });
+}
+
 async function auditBatchFlow(ctx) {
     const { audit, page, context, flowState } = ctx;
     flowState.stepLog.push('进入批量模式并选择两张样例图片');
@@ -1729,6 +1859,7 @@ async function main() {
             await runFlow(audit, viewport, 'login-success', {}, auditSuccessfulLoginFlow);
             await runFlow(audit, viewport, 'dashboard-workspace', {}, auditDashboardFlow);
             await runFlow(audit, viewport, 'image-report', {}, auditImageFlow);
+            await runFlow(audit, viewport, 'interaction-chaos', {}, auditInteractionChaosFlow);
             await runFlow(audit, viewport, 'batch-task-report', {}, auditBatchFlow);
             await runFlow(audit, viewport, 'video-stop', {}, auditVideoStopFlow);
             await runFlow(audit, viewport, 'webcam-browser-fallback', { fakeMedia: true }, auditWebcamFallbackSuccessFlow);

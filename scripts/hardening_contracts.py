@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from classroom_app.core.errors import ReportError, StreamError, TaskExecutionError
 from classroom_app.services.stream_service import StreamService
 from classroom_app.services.task_service import TaskService
+from config import Config
 from verify_report_archive import assert_batch_archive_contract as verify_batch_archive_contract
 from verify_report_archive import assert_report_html_contract
 from verify_report_archive import build_archive_expectations
@@ -227,6 +228,39 @@ def run_route_contracts() -> dict:
             finally:
                 services.models.load_model = original_load_model
 
+            current_student_model = services.models.get_current_model_info().get("student") or {}
+            current_student_ref = (
+                current_student_model.get("selection_relative_path")
+                or current_student_model.get("relative_path")
+                or current_student_model.get("path")
+            )
+            if not current_student_ref:
+                raise AssertionError("current student model reference missing for idempotent load contract")
+            detector_load_calls = []
+            config_save_calls = []
+            original_detector_load = services.models.detector.load_model
+            original_save_last_models = services.models.config_service.save_last_models
+            try:
+                services.models.detector.load_model = lambda *args, **kwargs: detector_load_calls.append(
+                    {"args": args, "kwargs": kwargs}
+                ) or True
+                services.models.config_service.save_last_models = lambda **kwargs: config_save_calls.append(kwargs)
+                load_result = services.models.load_model("student", current_student_ref)
+            finally:
+                services.models.detector.load_model = original_detector_load
+                services.models.config_service.save_last_models = original_save_last_models
+            if load_result[0] is not True:
+                raise AssertionError("same model reload should still return success")
+            if detector_load_calls:
+                raise AssertionError(f"same model reload should not call detector.load_model: {detector_load_calls!r}")
+            if config_save_calls:
+                raise AssertionError(f"same model reload should not persist config again: {config_save_calls!r}")
+            results["model_load_same_target_reused"] = {
+                "model_ref": current_student_ref,
+                "detector_load_calls": len(detector_load_calls),
+                "config_save_calls": len(config_save_calls),
+            }
+
             browser_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(browser_start, 200, "browser webcam start for report_not_ready")
             processing_task_id = browser_start.get_json()["data"]["task_id"]
@@ -257,6 +291,23 @@ def run_route_contracts() -> dict:
                 "browser webcam empty stop blocked",
             )
             require_task_status(client, empty_task_id, "failed", "browser empty session task")
+
+            stopped_video_task_id = "contract-video-stop-idempotent"
+            services.tasks.create_task(stopped_video_task_id, "video", "contract-video.mp4")
+            services.tasks.update_status(stopped_video_task_id, Config.VIDEO_STOP_STATUS, 12, 24)
+            stopped_video_response = client.post(f"/api/streams/video/{stopped_video_task_id}/stop")
+            assert_status(stopped_video_response, 200, "stopped video stop replay")
+            stopped_video_payload = stopped_video_response.get_json() or {}
+            if stopped_video_payload.get("message") != "视频任务已处于停止态":
+                raise AssertionError(
+                    f"stopped video replay should surface already-stopped message, got {stopped_video_payload.get('message')!r}"
+                )
+            if not (stopped_video_payload.get("data") or {}).get("already_stopped"):
+                raise AssertionError("stopped video replay should set already_stopped=true")
+            results["video_stop_idempotent"] = {
+                "task_id": stopped_video_task_id,
+                "status": (stopped_video_payload.get("data") or {}).get("status"),
+            }
 
             invalid_start = client.post("/api/streams/webcam/browser-session/start")
             assert_status(invalid_start, 200, "browser webcam start for invalid image")
@@ -373,6 +424,7 @@ def run_route_contracts() -> dict:
             zip_path = config.OUTPUT_FOLDER / batch_payload["zip_filename"]
             if not zip_path.exists():
                 raise AssertionError("batch export zip missing")
+            zip_mtime_before = zip_path.stat().st_mtime_ns
             with zipfile.ZipFile(zip_path) as archive:
                 verify_batch_archive_contract(
                     archive,
@@ -382,6 +434,15 @@ def run_route_contracts() -> dict:
                     ),
                     "batch export",
                 )
+            batch_export_reused = client.post("/api/tasks/reports/batch", json={"task_ids": [report_task_id, batch_task_id]})
+            assert_status(batch_export_reused, 200, "batch report export reused")
+            batch_payload_reused = batch_export_reused.get_json()["data"]
+            if batch_payload_reused["zip_filename"] != batch_payload["zip_filename"]:
+                raise AssertionError("identical batch export should reuse the same zip filename")
+            if not batch_payload_reused.get("reused"):
+                raise AssertionError("identical batch export should surface reused=true")
+            if zip_path.stat().st_mtime_ns != zip_mtime_before:
+                raise AssertionError("identical batch export should not rewrite the existing zip")
             results["batch_export_success"] = {
                 "zip_filename": batch_payload["zip_filename"],
                 "report_count": batch_payload["report_count"],
@@ -389,6 +450,11 @@ def run_route_contracts() -> dict:
                     report_contract["report_payload"]["report_filename"],
                     batch_report_contract["report_payload"]["report_filename"],
                 ],
+            }
+            results["batch_export_reused"] = {
+                "zip_filename": batch_payload_reused["zip_filename"],
+                "report_count": batch_payload_reused["report_count"],
+                "reused": batch_payload_reused["reused"],
             }
 
             results["batch_export_failure"] = assert_error(

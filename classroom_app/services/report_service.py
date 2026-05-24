@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 import uuid
 from datetime import datetime
 from io import StringIO
@@ -21,6 +22,7 @@ class ReportService:
     def __init__(self, task_service):
         self.task_service = task_service
         self._lock_guard = threading.Lock()
+        self._bundle_lock = threading.Lock()
         self._task_locks: dict[str, threading.Lock] = {}
 
     def ensure_task_report(self, summary: dict) -> dict:
@@ -65,26 +67,37 @@ class ReportService:
                 }
             )
 
-        bundle_name = f"reports-batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        bundle_fingerprint = self._build_batch_fingerprint(normalized_entries)
+        bundle_name = f"reports-batch-{bundle_fingerprint[:12]}.zip"
         bundle_path = Config.OUTPUT_FOLDER / bundle_name
-        temp_bundle_path = self._create_temp_path(bundle_path)
         manifest_files = self._build_batch_manifest(normalized_entries, bundle_name)
+        with self._bundle_lock:
+            if bundle_path.exists():
+                self._validate_batch_archive(bundle_path, normalized_entries, manifest_files)
+                return {
+                    "zip_url": f"/outputs/{bundle_name}",
+                    "zip_filename": bundle_name,
+                    "report_count": len(normalized_entries),
+                    "reused": True,
+                }
 
-        try:
-            self.write_batch_archive(temp_bundle_path, normalized_entries, manifest_files)
-            self._validate_batch_archive(temp_bundle_path, normalized_entries, manifest_files)
-            temp_bundle_path.replace(bundle_path)
-        except ReportError:
-            self._cleanup_temp_paths(temp_bundle_path)
-            raise
-        except Exception as exc:
-            self._cleanup_temp_paths(temp_bundle_path)
-            raise ReportError(f"批量报告打包失败: {exc}", code="report_bundle_failed", status=500)
+            temp_bundle_path = self._create_temp_path(bundle_path)
+            try:
+                self.write_batch_archive(temp_bundle_path, normalized_entries, manifest_files)
+                self._validate_batch_archive(temp_bundle_path, normalized_entries, manifest_files)
+                self._replace_path(temp_bundle_path, bundle_path)
+            except ReportError:
+                self._cleanup_temp_paths(temp_bundle_path)
+                raise
+            except Exception as exc:
+                self._cleanup_temp_paths(temp_bundle_path)
+                raise ReportError(f"批量报告打包失败: {exc}", code="report_bundle_failed", status=500)
 
         return {
             "zip_url": f"/outputs/{bundle_name}",
             "zip_filename": bundle_name,
             "report_count": len(normalized_entries),
+            "reused": False,
         }
 
     def render_html_report(self, summary: dict, output_path: Path) -> Path:
@@ -133,8 +146,8 @@ class ReportService:
             self._write_json(temp_meta_path, metadata)
             self._assert_nonempty_file(temp_meta_path, "报告元数据")
 
-            temp_meta_path.replace(meta_path)
-            temp_report_path.replace(report_path)
+            self._replace_path(temp_meta_path, meta_path)
+            self._replace_path(temp_report_path, report_path)
         except ReportError:
             self._cleanup_temp_paths(temp_report_path, temp_meta_path)
             raise
@@ -294,6 +307,18 @@ class ReportService:
             "manifest.csv": csv_buffer.getvalue(),
         }
 
+    def _build_batch_fingerprint(self, entries: list[dict]) -> str:
+        payload = [
+            {
+                "task_id": entry["summary"].get("task_id"),
+                "report_filename": entry["report_filename"],
+                "report_size": entry["report_path"].stat().st_size,
+                "report_mtime_ns": entry["report_path"].stat().st_mtime_ns,
+            }
+            for entry in entries
+        ]
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
     def _validate_batch_archive(self, bundle_path: Path, entries: list[dict], manifest_files: dict[str, str]) -> None:
         if not bundle_path.exists() or bundle_path.stat().st_size <= 0:
             raise ReportError("批量报告压缩包未生成成功", code="report_bundle_failed", status=500)
@@ -326,6 +351,20 @@ class ReportService:
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _replace_path(source: Path, target: Path, retries: int = 6, delay_seconds: float = 0.05) -> None:
+        for attempt in range(retries):
+            try:
+                source.replace(target)
+                return
+            except OSError as exc:
+                winerror = getattr(exc, "winerror", None)
+                if not isinstance(exc, PermissionError) and winerror not in {5, 32}:
+                    raise
+                if attempt >= retries - 1:
+                    raise
+                time.sleep(delay_seconds * (attempt + 1))
 
     @staticmethod
     def _sha256_file(path: Path) -> str:

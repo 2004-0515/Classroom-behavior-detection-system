@@ -45,6 +45,10 @@ import {
     toggleHistorySelectionIds,
 } from "./lib/history.js";
 import {
+    createActionRegistry,
+    createVersionRegistry,
+} from "./lib/action-guards.js";
+import {
     closeDialogById,
     focusDialogById,
     getDialogCard as getDialogCardHelper,
@@ -156,10 +160,21 @@ let taskPoller = null;
 let historyPoller = null;
 let webcamPoller = null;
 let historyRefreshInFlight = false;
+let historyRefreshPending = false;
 let browserWebcamFailureInFlight = false;
+const actionRegistry = createActionRegistry((message) => pushNotification(message, "info"));
+const versionRegistry = createVersionRegistry([
+    "mode",
+    "task",
+    "history",
+    "videoPoll",
+    "webcamPoll",
+    "browserWebcam",
+]);
 const browserWebcamSession = {
     active: false,
     stream: null,
+    sessionToken: 0,
     taskId: null,
     startedAt: 0,
     processedFrames: 0,
@@ -177,6 +192,95 @@ const browserWebcamSession = {
 };
 let activeDialogId = null;
 const dialogOpeners = new Map();
+
+function beginAction(key, busyMessage = "") {
+    const token = actionRegistry.acquire(key, busyMessage);
+    if (token) {
+        renderActionButtons();
+    }
+    return token;
+}
+
+function endAction(key, token) {
+    const released = actionRegistry.release(key, token);
+    if (released) {
+        renderActionButtons();
+    }
+    return released;
+}
+
+function isActionInFlight(key) {
+    return actionRegistry.isActive(key);
+}
+
+function clearActionKeys(keys = []) {
+    keys.forEach((key) => actionRegistry.clear(key));
+}
+
+function bumpVersion(key) {
+    return versionRegistry.bump(key);
+}
+
+function captureVersion(key) {
+    return versionRegistry.capture(key);
+}
+
+function isVersionCurrent(key, token) {
+    return versionRegistry.isCurrent(key, token);
+}
+
+function stopTaskPolling() {
+    clearInterval(taskPoller);
+    taskPoller = null;
+    bumpVersion("videoPoll");
+}
+
+function stopWebcamPolling() {
+    clearInterval(webcamPoller);
+    webcamPoller = null;
+    bumpVersion("webcamPoll");
+}
+
+function stopPolling() {
+    stopTaskPolling();
+    stopWebcamPolling();
+}
+
+function invalidateTaskContext() {
+    return bumpVersion("task");
+}
+
+function invalidateModeContext() {
+    bumpVersion("mode");
+    invalidateTaskContext();
+    bumpVersion("history");
+}
+
+function isTaskRequestCurrent(taskToken, { mode, taskId } = {}) {
+    if (!isVersionCurrent("task", taskToken)) return false;
+    if (mode && getState().mode !== mode) return false;
+    if (taskId && String(getState().currentTask?.task_id || "") !== String(taskId)) return false;
+    return true;
+}
+
+function isModeRequestCurrent(modeToken, mode) {
+    return isVersionCurrent("mode", modeToken) && (!mode || getState().mode === mode);
+}
+
+function clearModeScopedActions() {
+    clearActionKeys([
+        "detect-submit",
+        "video-stop",
+        "webcam-probe",
+        "webcam-start",
+        "webcam-stop",
+        "report-open",
+        "detail-open",
+        "random-call",
+        "history-open",
+        "history-export",
+    ]);
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
     bindElements();
@@ -318,7 +422,7 @@ async function loadConfig() {
             configBundle: configRes.data,
         });
         syncSettingsForm();
-        switchMode(getInitialMode(uiSettings.default_mode));
+        switchMode(getInitialMode(uiSettings.default_mode), { force: true });
     } catch (error) {
         pushNotification(`加载配置失败: ${error.message}`, "danger");
     }
@@ -338,11 +442,18 @@ async function loadModels(forceScan = false) {
 }
 
 async function applyModels() {
+    const actionToken = beginAction("model-apply", "模型应用处理中，请稍候");
+    if (!actionToken) return;
     const student = els.studentModelSelect.value;
     const teacher = els.teacherModelSelect.value;
     const modelInfo = getState().modelInfo || {};
     const lockedRoles = [];
+    const requestToken = bumpVersion("model");
     try {
+        if (!student && !teacher) {
+            pushNotification("请先选择模型", "danger");
+            return;
+        }
         if (student && !modelInfo.student?.selection_locked) {
             await request("/api/models/load", {
                 method: "POST",
@@ -361,11 +472,13 @@ async function applyModels() {
         } else if (teacher && modelInfo.teacher?.selection_locked) {
             lockedRoles.push("教师");
         }
-        if (!student && !teacher) {
-            pushNotification("请先选择模型", "danger");
+        if (!isVersionCurrent("model", requestToken)) {
             return;
         }
         const info = await request("/api/models/info");
+        if (!isVersionCurrent("model", requestToken)) {
+            return;
+        }
         setState({ modelInfo: info.data });
         populateModelSelects();
         if (lockedRoles.length) {
@@ -374,7 +487,11 @@ async function applyModels() {
             pushNotification("模型配置已更新", "success");
         }
     } catch (error) {
-        pushNotification(`模型应用失败: ${error.message}`, "danger");
+        if (isVersionCurrent("model", requestToken)) {
+            pushNotification(`模型应用失败: ${error.message}`, "danger");
+        }
+    } finally {
+        endAction("model-apply", actionToken);
     }
 }
 
@@ -396,10 +513,18 @@ async function saveParams() {
 }
 
 async function loadHistory() {
-    if (historyRefreshInFlight) return;
+    if (historyRefreshInFlight) {
+        historyRefreshPending = true;
+        return;
+    }
     historyRefreshInFlight = true;
+    historyRefreshPending = false;
+    const historyToken = bumpVersion("history");
     try {
         const response = await request(`/api/tasks/recent?limit=${getHistoryRecentLimit()}`);
+        if (!isVersionCurrent("history", historyToken)) {
+            return;
+        }
         const tasks = response.data.tasks || [];
         const taskPayloads = Object.fromEntries(
             tasks.map((task) => [task.task_id, normalizeTaskPayload(task)])
@@ -411,38 +536,55 @@ async function loadHistory() {
         });
         renderHistory();
     } catch (error) {
-        pushNotification(`历史记录加载失败: ${error.message}`, "danger");
+        if (isVersionCurrent("history", historyToken)) {
+            pushNotification(`历史记录加载失败: ${error.message}`, "danger");
+        }
     } finally {
         historyRefreshInFlight = false;
+        if (historyRefreshPending) {
+            historyRefreshPending = false;
+            void loadHistory();
+        }
     }
 }
 
-function switchMode(mode) {
-    const modeContent = MODE_CONTENT[mode] || MODE_CONTENT.image;
+function switchMode(mode, { force = false } = {}) {
+    const normalizedMode = VALID_MODES.has(mode) ? mode : "image";
+    const currentMode = getState().mode;
+    if (!force && normalizedMode === currentMode) {
+        return;
+    }
+    if (currentMode === "webcam" && normalizedMode !== "webcam") {
+        void stopActiveRealtimeSession({ restoreView: false, quiet: true, reloadHistory: true });
+    }
+    invalidateModeContext();
+    const modeContent = MODE_CONTENT[normalizedMode] || MODE_CONTENT.image;
     stopPolling();
+    clearModeScopedActions();
     setState({
-        mode,
+        mode: normalizedMode,
         selectedFiles: [],
         currentTask: null,
         activeTaskPayload: null,
         activeAssetIndex: 0,
         activeImageType: "annotated",
         webcamDiagnostics: null,
+        webcamStarting: false,
     });
     els.fileInput.value = "";
-    els.app.dataset.mode = mode;
-    els.navItems.forEach((item) => item.classList.toggle("active", item.dataset.mode === mode));
+    els.app.dataset.mode = normalizedMode;
+    els.navItems.forEach((item) => item.classList.toggle("active", item.dataset.mode === normalizedMode));
     els.workspaceTitle.textContent = modeContent.title;
-    els.modeBadge.textContent = formatModeBadge(mode);
+    els.modeBadge.textContent = formatModeBadge(normalizedMode);
     els.modeIntro.textContent = modeContent.intro;
     els.dropzoneHint.textContent = modeContent.hint;
     els.dropzoneTitle.textContent = modeContent.dropTitle;
     els.runBtn.textContent = modeContent.runLabel;
-    els.pickFileBtn.textContent = mode === "video" ? "选择视频" : "选择文件";
-    els.pickFileBtn.classList.toggle("hidden", mode === "webcam");
-    els.webcamControls.classList.toggle("hidden", mode !== "webcam");
-    els.webcamDiagnostics.classList.toggle("hidden", mode !== "webcam");
-    els.runBtn.classList.toggle("hidden", mode === "webcam");
+    els.pickFileBtn.textContent = normalizedMode === "video" ? "选择视频" : "选择文件";
+    els.pickFileBtn.classList.toggle("hidden", normalizedMode === "webcam");
+    els.webcamControls.classList.toggle("hidden", normalizedMode !== "webcam");
+    els.webcamDiagnostics.classList.toggle("hidden", normalizedMode !== "webcam");
+    els.runBtn.classList.toggle("hidden", normalizedMode === "webcam");
     renderSelectedFiles();
     clearPreview(modeContent.emptyTitle, modeContent.emptyCopy);
     renderTaskPayload(null);
@@ -456,11 +598,6 @@ function getInitialMode(defaultMode) {
     if (VALID_MODES.has(auditMode)) return auditMode;
     if (VALID_MODES.has(defaultMode)) return defaultMode;
     return "image";
-}
-
-function stopPolling() {
-    clearInterval(taskPoller);
-    clearInterval(webcamPoller);
 }
 
 function getHistoryPollMs() {
@@ -518,20 +655,37 @@ async function runDetection() {
         pushNotification("请先选择文件", "danger");
         return;
     }
+    const actionToken = beginAction("detect-submit", "当前任务正在提交，请稍候");
+    if (!actionToken) return;
+    const modeAtStart = mode;
+    const selectedFilesSnapshot = [...selectedFiles];
+    const taskToken = invalidateTaskContext();
+    stopPolling();
 
     try {
         let response;
-        const formData = createFormData(getState(), selectedFiles);
-        if (mode === "image") {
+        const formData = createFormData({ ...getState(), mode: modeAtStart }, selectedFilesSnapshot);
+        if (modeAtStart === "image") {
             response = await request("/api/detect/image", { method: "POST", body: formData });
-            applyResult(await loadTaskPayload(response.data.task_id));
-        } else if (mode === "batch") {
+            const payload = await loadTaskPayload(response.data.task_id);
+            if (!isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                return;
+            }
+            applyResult(payload);
+        } else if (modeAtStart === "batch") {
             response = await request("/api/detect/batch", { method: "POST", body: formData });
-            applyResult(await loadTaskPayload(response.data.task_id));
-        } else if (mode === "video") {
+            const payload = await loadTaskPayload(response.data.task_id);
+            if (!isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                return;
+            }
+            applyResult(payload);
+        } else if (modeAtStart === "video") {
             response = await request("/api/detect/video", { method: "POST", body: formData });
+            if (!isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                return;
+            }
             setState({
-                currentTask: { task_id: response.data.task_id, status: "processing", task_type: "video", file_name: selectedFiles[0]?.name },
+                currentTask: { task_id: response.data.task_id, status: "processing", task_type: "video", file_name: selectedFilesSnapshot[0]?.name },
                 activeTaskPayload: null,
                 activeAssetIndex: 0,
                 activeImageType: "annotated",
@@ -540,9 +694,15 @@ async function runDetection() {
             startVideoPolling(response.data.task_id);
         }
         await loadHistory();
-        pushNotification("任务已提交", "success");
+        if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+            pushNotification("任务已提交", "success");
+        }
     } catch (error) {
-        pushNotification(`检测失败: ${error.message}`, "danger");
+        if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+            pushNotification(`检测失败: ${error.message}`, "danger");
+        }
+    } finally {
+        endAction("detect-submit", actionToken);
     }
 }
 
@@ -551,14 +711,21 @@ async function loadTaskPayload(taskId) {
 }
 
 function startVideoPolling(taskId) {
-    clearInterval(taskPoller);
+    stopTaskPolling();
+    const pollToken = bumpVersion("videoPoll");
     const refresh = async () => {
+        if (!isVersionCurrent("videoPoll", pollToken) || String(getState().currentTask?.task_id || "") !== String(taskId)) {
+            return;
+        }
         try {
             const snapshot = await loadVideoPollingSnapshot({
                 taskId,
                 request,
                 normalizeTaskPayload,
             });
+            if (!isVersionCurrent("videoPoll", pollToken) || String(getState().currentTask?.task_id || "") !== String(taskId)) {
+                return;
+            }
             setState(snapshot.statePatch);
             if (snapshot.processing) {
                 showMedia("image", `/api/streams/video/${taskId}/feed`);
@@ -571,37 +738,57 @@ function startVideoPolling(taskId) {
                 }
                 renderTaskState(snapshot.metrics);
                 renderActionButtons();
-                clearInterval(taskPoller);
+                stopTaskPolling();
                 await loadHistory();
             }
         } catch (error) {
-            clearInterval(taskPoller);
+            if (!isVersionCurrent("videoPoll", pollToken)) {
+                return;
+            }
+            stopTaskPolling();
             pushNotification(`视频轮询失败: ${error.message}`, "danger");
         }
     };
-    refresh();
-    taskPoller = setInterval(refresh, getTaskPollMs());
+    void refresh();
+    taskPoller = setInterval(() => {
+        void refresh();
+    }, getTaskPollMs());
 }
 
 async function stopCurrentVideoTask() {
     const taskId = getState().currentTask?.task_id;
     if (!taskId) return;
+    const actionToken = beginAction("video-stop", "视频停止请求已在处理中");
+    if (!actionToken) return;
+    const taskVersion = captureVersion("task");
     try {
         await stopVideoTask(taskId, request);
         pushNotification("已请求停止视频检测", "info");
-        window.setTimeout(() => startVideoPolling(taskId), 300);
+        window.setTimeout(() => {
+            if (isVersionCurrent("task", taskVersion) && String(getState().currentTask?.task_id || "") === String(taskId)) {
+                startVideoPolling(taskId);
+            }
+        }, 300);
     } catch (error) {
         pushNotification(`停止失败: ${error.message}`, "danger");
+    } finally {
+        endAction("video-stop", actionToken);
     }
 }
 
 async function probeWebcam() {
+    const actionToken = beginAction("webcam-probe", "摄像头诊断处理中，请稍候");
+    if (!actionToken) return;
+    const modeToken = captureVersion("mode");
     try {
         pushNotification("正在诊断服务端摄像头，这一步可能需要几秒", "info");
         const response = await request(
             `/api/streams/webcam/diagnostics?camera_index=${encodeURIComponent(getState().cameraIndex)}`,
             { timeoutMs: WEBCAM_DIAGNOSTICS_TIMEOUT_MS }
         );
+        if (!isModeRequestCurrent(modeToken, "webcam")) {
+            return;
+        }
         setState({ webcamDiagnostics: response.data });
         renderWebcamDiagnostics();
         const selected = response.data?.selected;
@@ -612,7 +799,11 @@ async function probeWebcam() {
             pushNotification("未找到可读取画面的摄像头组合", "danger");
         }
     } catch (error) {
-        pushNotification(`摄像头诊断失败: ${error.message}`, "danger");
+        if (isModeRequestCurrent(modeToken, "webcam")) {
+            pushNotification(`摄像头诊断失败: ${error.message}`, "danger");
+        }
+    } finally {
+        endAction("webcam-probe", actionToken);
     }
 }
 
@@ -651,15 +842,57 @@ async function requestServerWebcamStartWithRetry() {
     }
 }
 
+async function stopActiveRealtimeSession({ restoreView = false, quiet = false, reloadHistory = true } = {}) {
+    if (browserWebcamSession.active || browserWebcamSession.taskId) {
+        await stopBrowserWebcamFallback({ restoreView, quiet, reloadHistory });
+        return true;
+    }
+    const currentTask = getState().currentTask;
+    if (currentTask?.task_type !== "webcam" || currentTask?.status !== "processing") {
+        return false;
+    }
+    try {
+        const response = await request("/api/streams/webcam/stop", { method: "POST" });
+        stopWebcamPolling();
+        if (restoreView) {
+            await restoreStoppedTask(response.data?.task_id, "巡检已停止", "可以重新启动摄像头，或从历史记录回看检测结果。");
+        }
+        if (!quiet) {
+            pushNotification("摄像头已停止", "success");
+        }
+        if (reloadHistory) {
+            await loadHistory();
+        }
+    } catch (error) {
+        if (!quiet) {
+            pushNotification(`摄像头停止失败: ${error.message}`, "danger");
+        }
+    } finally {
+        renderActionButtons();
+    }
+    return true;
+}
+
 async function startWebcam() {
+    const actionToken = beginAction("webcam-start", "摄像头启动处理中，请稍候");
+    if (!actionToken) return;
+    const modeToken = captureVersion("mode");
+    const taskToken = invalidateTaskContext();
+    stopPolling();
     setState({ webcamStarting: true });
     renderActionButtons();
     try {
+        if (!isModeRequestCurrent(modeToken, "webcam")) {
+            return;
+        }
         pushNotification("正在准备摄像头，服务端诊断超时后会自动切到浏览器直连", "info");
         const diagnostics = getState().webcamDiagnostics || await request(
             `/api/streams/webcam/diagnostics?camera_index=${encodeURIComponent(getState().cameraIndex)}`,
             { timeoutMs: WEBCAM_DIAGNOSTICS_TIMEOUT_MS }
         ).then((response) => response.data);
+        if (!isModeRequestCurrent(modeToken, "webcam") || !isVersionCurrent("task", taskToken)) {
+            return;
+        }
         setState({ webcamDiagnostics: diagnostics });
         renderWebcamDiagnostics();
         const preferredAttempt = findPreferredWebcamAttempt(diagnostics, getState().cameraIndex);
@@ -668,52 +901,65 @@ async function startWebcam() {
                 `服务端摄像头不可用，直接切换浏览器直连: ${preferredAttempt.error || "无法读取画面"}`,
                 "info"
             );
-            await startBrowserWebcamFallback(preferredAttempt.error || "服务端无法读取摄像头画面");
+            await startBrowserWebcamFallback(preferredAttempt.error || "服务端无法读取摄像头画面", { modeToken, taskToken });
             return;
         }
         const response = await requestServerWebcamStartWithRetry();
+        if (!isModeRequestCurrent(modeToken, "webcam") || !isVersionCurrent("task", taskToken)) {
+            await request("/api/streams/webcam/stop", { method: "POST" }).catch(() => ({}));
+            return;
+        }
         setState({ currentTask: { task_id: response.data.task_id, status: "processing", task_type: "webcam", file_name: `camera_${response.data.camera_index}` }, activeTaskPayload: null });
         showMedia("image", "/api/streams/webcam/feed");
         els.videoMeta.innerHTML = `<span class="pill processing">实时巡检中</span><span class="pill">机位 ${response.data.camera_index} / ${response.data.backend}</span>`;
         startWebcamPolling(response.data.task_id);
         pushNotification("摄像头已启动", "success");
     } catch (error) {
+        if (!isModeRequestCurrent(modeToken, "webcam") || !isVersionCurrent("task", taskToken)) {
+            return;
+        }
         pushNotification(`服务端摄像头启动未完成，尝试浏览器直连: ${error.message}`, "info");
-        await startBrowserWebcamFallback(error.message);
+        await startBrowserWebcamFallback(error.message, { modeToken, taskToken });
     } finally {
-        setState({ webcamStarting: false });
+        if (isModeRequestCurrent(modeToken, "webcam")) {
+            setState({ webcamStarting: false });
+        }
         renderActionButtons();
+        endAction("webcam-start", actionToken);
     }
 }
 
 async function stopWebcam() {
+    const actionToken = beginAction("webcam-stop", "摄像头停止处理中，请稍候");
+    if (!actionToken) return;
     try {
         if (!browserWebcamSession.active && getState().currentTask?.task_type !== "webcam") {
             pushNotification("当前没有正在运行的摄像头任务", "info");
             return;
         }
-        if (browserWebcamSession.active) {
-            await stopBrowserWebcamFallback();
-            return;
-        }
-        const response = await request("/api/streams/webcam/stop", { method: "POST" });
-        clearInterval(webcamPoller);
-        await restoreStoppedTask(response.data?.task_id, "巡检已停止", "可以重新启动摄像头，或从历史记录回看检测结果。");
-        pushNotification("摄像头已停止", "success");
-        await loadHistory();
+        await stopActiveRealtimeSession({ restoreView: true, quiet: false, reloadHistory: true });
     } catch (error) {
         pushNotification(`摄像头停止失败: ${error.message}`, "danger");
+    } finally {
+        endAction("webcam-stop", actionToken);
     }
 }
 
 function startWebcamPolling(taskId) {
-    clearInterval(webcamPoller);
+    stopWebcamPolling();
+    const pollToken = bumpVersion("webcamPoll");
     const refresh = async () => {
+        if (!isVersionCurrent("webcamPoll", pollToken) || String(getState().currentTask?.task_id || "") !== String(taskId)) {
+            return;
+        }
         try {
             const [statsRes, taskRes] = await Promise.all([
                 request("/api/streams/webcam/metrics"),
                 request(`/api/tasks/${taskId}`),
             ]);
+            if (!isVersionCurrent("webcamPoll", pollToken) || String(getState().currentTask?.task_id || "") !== String(taskId)) {
+                return;
+            }
             const snapshot = resolveWebcamPollingSnapshot({
                 task: taskRes.data,
                 metrics: statsRes.data,
@@ -722,25 +968,41 @@ function startWebcamPolling(taskId) {
             });
             setState(snapshot.statePatch);
             if (!snapshot.processing) {
-                clearInterval(webcamPoller);
+                stopWebcamPolling();
                 await loadHistory();
             }
             renderTaskState(snapshot.metrics);
             renderTaskPayload(getState().activeTaskPayload);
             renderActionButtons();
         } catch (error) {
-            clearInterval(webcamPoller);
+            if (!isVersionCurrent("webcamPoll", pollToken)) {
+                return;
+            }
+            stopWebcamPolling();
             pushNotification(`实时巡检轮询失败: ${error.message}`, "danger");
         }
     };
-    refresh();
-    webcamPoller = setInterval(refresh, getTaskPollMs());
+    void refresh();
+    webcamPoller = setInterval(() => {
+        void refresh();
+    }, getTaskPollMs());
 }
 
 async function openHistoryTask(taskId) {
+    const actionToken = beginAction("history-open", "历史任务切换处理中，请稍候");
+    if (!actionToken) return;
+    if (getState().currentTask?.task_type === "webcam" && getState().currentTask?.status === "processing") {
+        await stopActiveRealtimeSession({ restoreView: false, quiet: true, reloadHistory: true });
+    }
+    stopPolling();
+    const modeAtStart = getState().mode;
+    const taskToken = invalidateTaskContext();
     try {
         setPreviewLoading(true);
         const task = await loadTaskPayload(taskId);
+        if (!isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+            return;
+        }
         applyResult(task);
         focusHistoryTask(taskId);
         const followup = resolveHistoryTaskFollowup(task);
@@ -750,9 +1012,12 @@ async function openHistoryTask(taskId) {
             startWebcamPolling(followup.taskId);
         }
     } catch (error) {
-        pushNotification(`加载任务详情失败: ${error.message}`, "danger");
+        if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+            pushNotification(`加载任务详情失败: ${error.message}`, "danger");
+        }
     } finally {
         setPreviewLoading(false);
+        endAction("history-open", actionToken);
     }
 }
 
@@ -886,6 +1151,8 @@ function historyCapabilityBadge(task, summary) {
 }
 
 async function logout() {
+    await stopActiveRealtimeSession({ restoreView: false, quiet: true, reloadHistory: false });
+    stopPolling();
     await request("/api/auth/logout", { method: "POST" });
     window.location.href = "/login";
 }
@@ -899,11 +1166,18 @@ async function openReport(event) {
         pushNotification("当前没有可生成报告的任务", "danger");
         return;
     }
+    const actionToken = beginAction("report-open", "报告生成处理中，请稍候");
+    if (!actionToken) return;
+    const taskVersion = captureVersion("task");
     try {
         const response = await request(`/api/tasks/${taskId}/report`);
-        window.open(response.data.report_url, "_blank", "noopener");
+        if (isVersionCurrent("task", taskVersion) && String(getState().currentTask?.task_id || "") === String(taskId)) {
+            window.open(response.data.report_url, "_blank", "noopener");
+        }
     } catch (error) {
         pushNotification(`报告生成失败: ${error.message}`, "danger");
+    } finally {
+        endAction("report-open", actionToken);
     }
 }
 
@@ -911,6 +1185,7 @@ function populateModelSelects() {
     const { models = [], modelInfo } = getState();
     const studentLocked = Boolean(modelInfo?.student?.selection_locked);
     const teacherLocked = Boolean(modelInfo?.teacher?.selection_locked);
+    const applying = isActionInFlight("model-apply");
     const buildOptions = (selectedPath) => ['<option value="">请选择模型</option>', ...models.map((model) => {
         const value = model.relative_path || model.filename;
         const selected = selectedPath && selectedPath.includes(value) ? "selected" : "";
@@ -922,9 +1197,9 @@ function populateModelSelects() {
         els.studentModelSelect.innerHTML = buildOptions(modelInfo?.student?.path);
         els.teacherModelSelect.innerHTML = buildOptions(modelInfo?.teacher?.path);
     }
-    els.studentModelSelect.disabled = studentLocked;
-    els.teacherModelSelect.disabled = teacherLocked;
-    els.applyModelsBtn.disabled = studentLocked && teacherLocked;
+    els.studentModelSelect.disabled = studentLocked || applying;
+    els.teacherModelSelect.disabled = teacherLocked || applying;
+    els.applyModelsBtn.disabled = applying || (studentLocked && teacherLocked);
     els.modelMeta.innerHTML = `
         <div>
             <strong>${modelInfo?.student?.display_name || formatModelName(modelInfo?.student?.relative_path || modelInfo?.student?.path, "student")}</strong>
@@ -949,6 +1224,8 @@ function render(state) {
     renderTaskPayload(state.activeTaskPayload);
     renderNotifications();
     populateModelSelects();
+    els.saveSettingsBtn.disabled = isActionInFlight("settings-save");
+    els.resetSettingsBtn.disabled = isActionInFlight("settings-save");
     renderWebcamDiagnostics();
     renderOverviewHighlights();
     renderLiveBanner();
@@ -1226,20 +1503,27 @@ async function exportSelectedReports() {
         pushNotification("请先选择要导出的历史任务", "info");
         return;
     }
+    const actionToken = beginAction("history-export", "历史报告导出处理中，请稍候");
+    if (!actionToken) return;
+    const modeVersion = captureVersion("mode");
+    const taskIdsSnapshot = [...taskIds];
     try {
         setState({ exportingHistoryReports: true });
         const response = await request("/api/tasks/reports/batch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ task_ids: taskIds }),
+            body: JSON.stringify({ task_ids: taskIdsSnapshot }),
         });
-        window.open(response.data.zip_url, "_blank", "noopener");
-        pushNotification(`已生成 ${response.data.report_count} 份报告压缩包`, "success");
+        if (isVersionCurrent("mode", modeVersion)) {
+            window.open(response.data.zip_url, "_blank", "noopener");
+            pushNotification(`已生成 ${response.data.report_count} 份报告压缩包`, "success");
+        }
     } catch (error) {
         pushNotification(`批量导出失败: ${error.message}`, "danger");
     } finally {
         setState({ exportingHistoryReports: false });
         renderHistory();
+        endAction("history-export", actionToken);
     }
 }
 
@@ -1258,21 +1542,41 @@ function restoreEmptyStoppedTaskState(emptyTitle, emptyCopy) {
 }
 
 async function restoreStoppedTask(taskId, emptyTitle, emptyCopy) {
+    const modeAtStart = getState().mode;
+    const taskToken = invalidateTaskContext();
     try {
         const restored = await restoreStoppedTaskState({
             taskId,
             emptyTitle,
             emptyCopy,
-            loadTaskPayload,
-            applyResult,
-            focusHistoryTask,
+            loadTaskPayload: async (targetTaskId) => {
+                const task = await loadTaskPayload(targetTaskId);
+                if (!isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                    return null;
+                }
+                return task;
+            },
+            applyResult: (task) => {
+                if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                    applyResult(task);
+                }
+            },
+            focusHistoryTask: (targetTaskId) => {
+                if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+                    focusHistoryTask(targetTaskId);
+                }
+            },
             setEmptyState: restoreEmptyStoppedTaskState,
         });
         if (restored.restored) return;
     } catch (error) {
-        pushNotification(`停止后加载结果失败: ${error.message}`, "danger");
+        if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+            pushNotification(`停止后加载结果失败: ${error.message}`, "danger");
+        }
     }
-    restoreEmptyStoppedTaskState(emptyTitle, emptyCopy);
+    if (isTaskRequestCurrent(taskToken, { mode: modeAtStart })) {
+        restoreEmptyStoppedTaskState(emptyTitle, emptyCopy);
+    }
 }
 
 async function openDetailViewer() {
@@ -1281,6 +1585,10 @@ async function openDetailViewer() {
         pushNotification("当前没有可细看的任务", "info");
         return;
     }
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : els.openDetailBtn;
+    const actionToken = beginAction("detail-open", "结果细看加载中，请稍候");
+    if (!actionToken) return;
+    const taskVersion = captureVersion("task");
     try {
         const { imageUrl, detections, title } = await buildInspectorPayload({
             task,
@@ -1295,16 +1603,24 @@ async function openDetailViewer() {
             formatTaskType,
             formatFileLabel,
         });
+        if (!isVersionCurrent("task", taskVersion) || String(getState().currentTask?.task_id || "") !== String(task.task_id)) {
+            return;
+        }
         inspectorState.image = await loadImage(imageUrl);
+        if (!isVersionCurrent("task", taskVersion) || String(getState().currentTask?.task_id || "") !== String(task.task_id)) {
+            return;
+        }
         inspectorState.detections = detections.map((item, index) => ({ ...item, entryId: index }));
         inspectorState.visibility = detections.map(() => true);
         inspectorState.activeIndex = detections.length ? 0 : -1;
         inspectorState.title = title;
         els.detailModalTitle.textContent = title;
         renderInspector();
-        openDialog("detailModal");
+        openDialog("detailModal", opener);
     } catch (error) {
         pushNotification(`结果细看失败: ${error.message}`, "danger");
+    } finally {
+        endAction("detail-open", actionToken);
     }
 }
 
@@ -1342,6 +1658,10 @@ function setInspectorVisibility(visible) {
 async function randomCallCurrentFrame() {
     const task = getState().currentTask;
     const summary = getState().activeTaskPayload;
+    const actionToken = beginAction("random-call", "随机点名处理中，请稍候");
+    if (!actionToken) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : els.randomCallBtn;
+    const taskVersion = captureVersion("task");
     try {
         const payload = await getRandomCallPayload({
             task,
@@ -1355,8 +1675,14 @@ async function randomCallCurrentFrame() {
             request,
             formatTaskType,
         });
+        if (task && (!isVersionCurrent("task", taskVersion) || String(getState().currentTask?.task_id || "") !== String(task.task_id))) {
+            return;
+        }
         const target = pickRandomHeadCandidate(payload.detections, isHeadCandidate);
         const image = await loadImage(payload.image);
+        if (task && (!isVersionCurrent("task", taskVersion) || String(getState().currentTask?.task_id || "") !== String(task.task_id))) {
+            return;
+        }
         renderRandomCallResult({
             canvas: els.randomCallCanvas,
             metaNode: els.randomCallMeta,
@@ -1367,9 +1693,11 @@ async function randomCallCurrentFrame() {
             formatBehaviorLabel,
             formatNumber,
         });
-        openDialog("randomCallModal");
+        openDialog("randomCallModal", opener);
     } catch (error) {
         pushNotification(`随机点名失败: ${error.message}`, "danger");
+    } finally {
+        endAction("random-call", actionToken);
     }
 }
 
@@ -1406,41 +1734,58 @@ function renderActionButtons() {
     const activeDetections = browserWebcamSession.active ? browserWebcamSession.latestDetections : mergeDetectionsFromTaskPayload(summary);
     const canRandomCall = activeDetections.some((item) => isHeadCandidate(item.behavior));
     const canOpenReport = canOpenReportForTask(task, summary);
+    const detectSubmitting = isActionInFlight("detect-submit");
+    const stoppingVideo = isActionInFlight("video-stop");
+    const probingWebcam = isActionInFlight("webcam-probe");
+    const startingWebcam = isActionInFlight("webcam-start");
+    const stoppingWebcam = isActionInFlight("webcam-stop");
+    const openingReport = isActionInFlight("report-open");
+    const openingDetail = isActionInFlight("detail-open");
+    const randomCalling = isActionInFlight("random-call");
     els.stopTaskBtn.classList.toggle("hidden", !(task?.task_type === "video" && task?.status === "processing"));
+    els.stopTaskBtn.disabled = stoppingVideo;
     els.randomCallBtn.classList.toggle("hidden", !(task && (task.task_type === "webcam" || task.task_type === "video" || hasAsset)));
-    els.randomCallBtn.disabled = !canRandomCall;
-    els.openDetailBtn.disabled = !(task && (task.task_type === "image" || task.task_type === "batch" || task.task_type === "webcam" || task.task_type === "video"));
+    els.randomCallBtn.disabled = !canRandomCall || randomCalling;
+    els.openDetailBtn.disabled = !(task && (task.task_type === "image" || task.task_type === "batch" || task.task_type === "webcam" || task.task_type === "video")) || openingDetail;
     els.downloadAssetBtn.disabled = !hasAsset;
     els.downloadAssetBtn.textContent = hasAsset ? "下载当前资源" : "等待可下载资源";
     els.reportLink.classList.toggle("hidden", !task);
-    els.reportLink.classList.toggle("disabled", !canOpenReport);
-    els.reportLink.setAttribute("aria-disabled", canOpenReport ? "false" : "true");
+    els.reportLink.classList.toggle("disabled", !canOpenReport || openingReport);
+    els.reportLink.setAttribute("aria-disabled", canOpenReport && !openingReport ? "false" : "true");
     els.startWebcamBtn.classList.toggle("hidden", !webcamMode || webcamActive);
     els.stopWebcamBtn.classList.toggle("hidden", !webcamMode || !webcamActive);
-    els.startWebcamBtn.disabled = !webcamMode || webcamStarting || webcamActive;
-    els.stopWebcamBtn.disabled = !webcamMode || webcamStarting || !webcamActive;
-    els.probeWebcamBtn.disabled = !webcamMode || webcamStarting || webcamActive;
-    els.runBtn.disabled = webcamMode || runningDetection || !hasPendingFiles;
-    els.runBtn.textContent = runningDetection ? "检测进行中..." : (MODE_CONTENT[state.mode] || MODE_CONTENT.image).runLabel;
+    els.startWebcamBtn.disabled = !webcamMode || webcamStarting || startingWebcam || probingWebcam || stoppingWebcam || webcamActive;
+    els.stopWebcamBtn.disabled = !webcamMode || webcamStarting || startingWebcam || stoppingWebcam || !webcamActive;
+    els.probeWebcamBtn.disabled = !webcamMode || webcamStarting || startingWebcam || probingWebcam || stoppingWebcam || webcamActive;
+    els.runBtn.disabled = webcamMode || runningDetection || detectSubmitting || !hasPendingFiles;
+    els.runBtn.textContent = runningDetection || detectSubmitting ? "检测进行中..." : (MODE_CONTENT[state.mode] || MODE_CONTENT.image).runLabel;
 }
 
-async function startBrowserWebcamFallback(reason = "") {
+async function startBrowserWebcamFallback(reason = "", { modeToken = captureVersion("mode"), taskToken = captureVersion("task") } = {}) {
     if (!navigator.mediaDevices?.getUserMedia) {
-        clearPreview("摄像头不可用", "当前浏览器环境不支持 getUserMedia。");
-        pushNotification("当前浏览器不支持摄像头直连", "danger");
+        if (isModeRequestCurrent(modeToken, "webcam")) {
+            clearPreview("摄像头不可用", "当前浏览器环境不支持 getUserMedia。");
+            pushNotification("当前浏览器不支持摄像头直连", "danger");
+        }
         return;
     }
+    const sessionToken = bumpVersion("browserWebcam");
     try {
         clearPreview("等待浏览器授权", "请在浏览器弹窗中允许摄像头访问。");
         els.videoMeta.innerHTML = `<span class="pill processing">等待浏览器授权</span><span class="pill">getUserMedia</span>`;
         pushNotification("正在请求浏览器摄像头权限", "info");
         resetBrowserWebcamSession();
+        browserWebcamSession.sessionToken = sessionToken;
         await startBrowserWebcamSession({
             session: browserWebcamSession,
             request,
             createVideoElement: () => document.createElement("video"),
             createCanvasElement: () => document.createElement("canvas"),
         });
+        if (!isModeRequestCurrent(modeToken, "webcam") || !isVersionCurrent("task", taskToken) || browserWebcamSession.sessionToken !== sessionToken) {
+            await stopBrowserWebcamFallback({ restoreView: false, quiet: true, reloadHistory: false });
+            return;
+        }
 
         setState({
             currentTask: {
@@ -1454,20 +1799,28 @@ async function startBrowserWebcamFallback(reason = "") {
             activeTaskPayload: null,
         });
         clearPreview("浏览器摄像头启动中", "正在建立浏览器直连采集链路。");
-        await waitForBrowserWebcamFirstFrame();
+        await waitForBrowserWebcamFirstFrame({ sessionToken });
+        if (!isModeRequestCurrent(modeToken, "webcam") || !isVersionCurrent("task", taskToken) || browserWebcamSession.sessionToken !== sessionToken) {
+            await stopBrowserWebcamFallback({ restoreView: false, quiet: true, reloadHistory: false });
+            return;
+        }
         browserWebcamSession.timer = window.setInterval(() => {
-            void captureBrowserWebcamFrame().catch(() => {});
+            void captureBrowserWebcamFrame({ silentFailure: true, sessionToken }).catch(() => {});
         }, 900);
         pushNotification(reason ? `已切换到浏览器摄像头直连: ${reason}` : "已切换到浏览器摄像头直连", "success");
     } catch (error) {
-        if (browserWebcamSession.taskId) {
-            await failBrowserWebcamSession(error.message);
+        if (browserWebcamSession.taskId && browserWebcamSession.sessionToken === sessionToken) {
+            await failBrowserWebcamSession(error.message, { sessionToken, restoreView: true, reloadHistory: true });
         } else {
             resetBrowserWebcamSession();
-            clearPreview("摄像头不可用", error.message);
-            renderActionButtons();
+            if (isModeRequestCurrent(modeToken, "webcam")) {
+                clearPreview("摄像头不可用", error.message);
+                renderActionButtons();
+            }
         }
-        pushNotification(`浏览器摄像头直连失败: ${error.message}`, "danger");
+        if (isModeRequestCurrent(modeToken, "webcam")) {
+            pushNotification(`浏览器摄像头直连失败: ${error.message}`, "danger");
+        }
     }
 }
 
@@ -1477,10 +1830,10 @@ function waitMs(milliseconds) {
     });
 }
 
-async function waitForBrowserWebcamFirstFrame() {
+async function waitForBrowserWebcamFirstFrame({ sessionToken = browserWebcamSession.sessionToken } = {}) {
     const deadline = Date.now() + BROWSER_WEBCAM_FIRST_FRAME_TIMEOUT_MS;
-    while (browserWebcamSession.active && Date.now() < deadline) {
-        const frame = await captureBrowserWebcamFrame({ silentFailure: true });
+    while (browserWebcamSession.active && browserWebcamSession.sessionToken === sessionToken && Date.now() < deadline) {
+        const frame = await captureBrowserWebcamFrame({ silentFailure: true, sessionToken });
         if (frame) {
             return frame;
         }
@@ -1489,12 +1842,15 @@ async function waitForBrowserWebcamFirstFrame() {
     throw new Error(`浏览器摄像头已授权，但在 ${(BROWSER_WEBCAM_FIRST_FRAME_TIMEOUT_MS / 1000).toFixed(1)} 秒内没有拿到首帧`);
 }
 
-async function failBrowserWebcamSession(message) {
-    if (browserWebcamFailureInFlight) return;
+async function failBrowserWebcamSession(message, { sessionToken = browserWebcamSession.sessionToken, restoreView = true, reloadHistory = true } = {}) {
+    if (browserWebcamFailureInFlight || browserWebcamSession.sessionToken !== sessionToken) return;
     browserWebcamFailureInFlight = true;
     const taskId = browserWebcamSession.taskId;
     try {
         clearInterval(browserWebcamSession.timer);
+        browserWebcamSession.timer = null;
+        browserWebcamSession.active = false;
+        bumpVersion("browserWebcam");
         try {
             await stopBrowserWebcamSession({
                 session: browserWebcamSession,
@@ -1510,21 +1866,28 @@ async function failBrowserWebcamSession(message) {
         browserWebcamFailureInFlight = false;
     }
 
-    try {
-        await restoreStoppedTask(taskId, "浏览器摄像头会话失败", message);
-    } catch (restoreError) {
-        console.warn("browser webcam failure restore failed", restoreError);
-        clearPreview("浏览器摄像头会话失败", message);
+    if (restoreView) {
+        try {
+            await restoreStoppedTask(taskId, "浏览器摄像头会话失败", message);
+        } catch (restoreError) {
+            console.warn("browser webcam failure restore failed", restoreError);
+            clearPreview("浏览器摄像头会话失败", message);
+        }
     }
-    await loadHistory().catch(() => {});
+    if (reloadHistory) {
+        await loadHistory().catch(() => {});
+    }
     renderActionButtons();
 }
 
-async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
-    if (browserWebcamSession.capturePromise) {
+async function captureBrowserWebcamFrame({ silentFailure = false, sessionToken = browserWebcamSession.sessionToken } = {}) {
+    if (browserWebcamSession.capturePromise && browserWebcamSession.sessionToken === sessionToken) {
         return browserWebcamSession.capturePromise;
     }
     const capturePromise = (async () => {
+        if (browserWebcamSession.sessionToken !== sessionToken) {
+            return null;
+        }
         try {
             const frame = await captureBrowserWebcamSessionFrame({
                 session: browserWebcamSession,
@@ -1535,7 +1898,7 @@ async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
             });
             if (!frame) return null;
             const { stats, taskPayload, annotatedImage, processedFrames } = frame;
-            if (!browserWebcamSession.active) {
+            if (!browserWebcamSession.active || browserWebcamSession.sessionToken !== sessionToken) {
                 return frame;
             }
             setState({
@@ -1565,8 +1928,11 @@ async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
             renderActionButtons();
             return frame;
         } catch (error) {
-            await failBrowserWebcamSession(error.message);
-            if (!silentFailure) {
+            const shouldNotify = !silentFailure && browserWebcamSession.sessionToken === sessionToken;
+            if (browserWebcamSession.sessionToken === sessionToken) {
+                await failBrowserWebcamSession(error.message, { sessionToken, restoreView: true, reloadHistory: true });
+            }
+            if (shouldNotify) {
                 pushNotification(`浏览器摄像头采集失败: ${error.message}`, "danger");
             }
             throw error;
@@ -1582,8 +1948,9 @@ async function captureBrowserWebcamFrame({ silentFailure = false } = {}) {
     }
 }
 
-async function stopBrowserWebcamFallback() {
-    if (!browserWebcamSession.active) return;
+async function stopBrowserWebcamFallback({ restoreView = true, quiet = false, reloadHistory = true } = {}) {
+    if (!browserWebcamSession.active && !browserWebcamSession.taskId) return false;
+    const sessionToken = browserWebcamSession.sessionToken;
     const taskId = browserWebcamSession.taskId;
     let noticeMessage = "浏览器摄像头会话已结束，可以从历史记录回看摘要。";
     let noticeLevel = "success";
@@ -1591,6 +1958,7 @@ async function stopBrowserWebcamFallback() {
         clearInterval(browserWebcamSession.timer);
         browserWebcamSession.timer = null;
         browserWebcamSession.active = false;
+        bumpVersion("browserWebcam");
         if (browserWebcamSession.capturePromise) {
             try {
                 await browserWebcamSession.capturePromise;
@@ -1598,31 +1966,42 @@ async function stopBrowserWebcamFallback() {
                 console.warn("browser webcam capture flush failed", captureError);
             }
         }
-        await stopBrowserWebcamSession({
-            session: browserWebcamSession,
-            request,
-            getBrowserWebcamSessionStats,
-        });
+        if (taskId) {
+            await stopBrowserWebcamSession({
+                session: browserWebcamSession,
+                request,
+                getBrowserWebcamSessionStats,
+            });
+        }
     } catch (error) {
         noticeMessage = error.message;
         noticeLevel = "danger";
     } finally {
         resetBrowserWebcamSession();
     }
-    await restoreStoppedTask(
-        taskId,
-        noticeLevel === "success" ? "巡检已停止" : "浏览器摄像头会话失败",
-        noticeMessage,
-    );
-    pushNotification(
-        noticeLevel === "success" ? "浏览器摄像头直连已停止" : `浏览器摄像头会话结束失败: ${noticeMessage}`,
-        noticeLevel,
-    );
-    await loadHistory();
+    if (restoreView) {
+        await restoreStoppedTask(
+            taskId,
+            noticeLevel === "success" ? "巡检已停止" : "浏览器摄像头会话失败",
+            noticeMessage,
+        );
+    }
+    if (!quiet) {
+        pushNotification(
+            noticeLevel === "success" ? "浏览器摄像头直连已停止" : `浏览器摄像头会话结束失败: ${noticeMessage}`,
+            noticeLevel,
+        );
+    }
+    if (reloadHistory) {
+        await loadHistory();
+    }
+    renderActionButtons();
+    return true;
 }
 
 function resetBrowserWebcamSession() {
     resetBrowserWebcamSessionState(browserWebcamSession);
+    browserWebcamSession.sessionToken = captureVersion("browserWebcam");
 }
 
 window.classroomAppControls = {
@@ -1645,18 +2024,24 @@ function syncSettingsForm() {
 }
 
 async function saveSettings() {
+    const actionToken = beginAction("settings-save", "设置保存中，请稍候");
+    if (!actionToken) return;
     const payload = {
         default_mode: els.settingDefaultMode.value,
         auto_scan_models: els.settingAutoScan.checked,
         show_confidence: els.settingShowConfidence.checked,
         show_bbox_labels: els.settingShowLabels.checked,
     };
+    const requestToken = bumpVersion("settings");
     try {
         const response = await request("/api/user/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
+        if (!isVersionCurrent("settings", requestToken)) {
+            return;
+        }
         const settings = { ...DEFAULT_UI_SETTINGS, ...(response.data.settings || {}) };
         setState({ uiSettings: settings });
         els.settingsFeedback.textContent = "设置已保存。";
@@ -1667,8 +2052,12 @@ async function saveSettings() {
             render(getState());
         }
     } catch (error) {
-        els.settingsFeedback.textContent = `保存失败：${error.message}`;
-        pushNotification(`设置保存失败: ${error.message}`, "danger");
+        if (isVersionCurrent("settings", requestToken)) {
+            els.settingsFeedback.textContent = `保存失败：${error.message}`;
+            pushNotification(`设置保存失败: ${error.message}`, "danger");
+        }
+    } finally {
+        endAction("settings-save", actionToken);
     }
 }
 
@@ -1798,10 +2187,11 @@ function handleDialogKeydown(event) {
     }
 }
 
-function openDialog(id) {
+function openDialog(id, opener = null) {
     openDialogById({
         els,
         id,
+        opener,
         dialogOpeners,
         getActiveElement: () => (document.activeElement instanceof HTMLElement ? document.activeElement : null),
         setActiveDialogId: (value) => {

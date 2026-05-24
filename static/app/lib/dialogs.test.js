@@ -126,6 +126,26 @@ test("openDialogById moves focus into the dialog immediately and on the next fra
 });
 
 
+test("openDialogById preserves an explicit opener for async dialog launches", () => {
+    const harness = makeDialogHarness();
+    const delayedOpener = makeFocusable("delayed-opener", harness.setActiveElement);
+    const dialogOpeners = new Map();
+
+    harness.setActiveElement(harness.closeButton);
+    openDialogById({
+        els: harness.els,
+        id: "modelDetailsModal",
+        opener: delayedOpener,
+        dialogOpeners,
+        getActiveElement: harness.getActiveElement,
+        setActiveDialogId: () => {},
+        requestAnimationFrame: () => {},
+    });
+
+    assert.equal(dialogOpeners.get("modelDetailsModal"), delayedOpener);
+});
+
+
 test("closeDialogById hides the dialog and returns focus to the opener", () => {
     const harness = makeDialogHarness();
     const dialogOpeners = new Map([["modelDetailsModal", harness.opener]]);
