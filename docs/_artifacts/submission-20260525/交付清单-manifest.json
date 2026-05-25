@@ -1,0 +1,100 @@
+{
+  "generated_at": "2026-05-26T00:48:16",
+  "output_dir": "docs/_artifacts/submission-20260525",
+  "verify_all_summary": "docs/_artifacts/verify-all-summary.json",
+  "items": [
+    {
+      "key": "assignment_01_srs",
+      "filename": "01_需求规格说明书.docx",
+      "path": "docs/_artifacts/submission-20260525/01_需求规格说明书.docx",
+      "size_bytes": 43617,
+      "sha256": "bbbd5fdabedbf8a6345616cacb093f1fae3772b3f4ffeecdffaeb32deed0d74f"
+    },
+    {
+      "key": "assignment_02_head_model",
+      "filename": "02_人头检测模型验证结果.zip",
+      "path": "docs/_artifacts/submission-20260525/02_人头检测模型验证结果.zip",
+      "size_bytes": 17602164,
+      "sha256": "18683ede6d6361668478a716ea1b3ee24ac3c7ccbb690c453785c281d9bea862"
+    },
+    {
+      "key": "assignment_03_behavior_model",
+      "filename": "03_课堂行为检测模型验证结果.zip",
+      "path": "docs/_artifacts/submission-20260525/03_课堂行为检测模型验证结果.zip",
+      "size_bytes": 17205908,
+      "sha256": "83ac97d59b0cd4b8fb179a61927d8a28652fd862b4dd95f04a1cd01eff9ef34c"
+    },
+    {
+      "key": "assignment_04_qt",
+      "filename": "04_Qt可视化界面代码.zip",
+      "path": "docs/_artifacts/submission-20260525/04_Qt可视化界面代码.zip",
+      "size_bytes": 7621,
+      "sha256": "d7840f7453aa0a85c65f5a00e28bfff37ef39a9d174d8a614cf3ee31db22b83c"
+    },
+    {
+      "key": "assignment_05_backend",
+      "filename": "05_后端核心文件代码.zip",
+      "path": "docs/_artifacts/submission-20260525/05_后端核心文件代码.zip",
+      "size_bytes": 166930,
+      "sha256": "45fe9813ba3dd9ce4e1a0909be287e9ec66e0dfd8b428c7e5e7c3cdc2d7eb3e4"
+    },
+    {
+      "key": "assignment_06_frontend",
+      "filename": "06_前端文件完整代码.zip",
+      "path": "docs/_artifacts/submission-20260525/06_前端文件完整代码.zip",
+      "size_bytes": 133728,
+      "sha256": "b94d125d935c414df2d15f2f37ef104f06fc33aa50b62c60450c64be7da884ac"
+    },
+    {
+      "key": "assignment_07_random_call",
+      "filename": "07_随机点名核心代码.zip",
+      "path": "docs/_artifacts/submission-20260525/07_随机点名核心代码.zip",
+      "size_bytes": 33114,
+      "sha256": "f542c639595d2116dab6ead8de4bc4961a425a844b33a6f1dd56415724f938cb"
+    },
+    {
+      "key": "assignment_08_bug_log",
+      "filename": "08_Bug修复日志.docx",
+      "path": "docs/_artifacts/submission-20260525/08_Bug修复日志.docx",
+      "size_bytes": 42789,
+      "sha256": "0ae2fcef7f08276ea170fe00351f274b44ef4c49578880c87d37e22636d6f1ba"
+    },
+    {
+      "key": "assignment_09_test_report",
+      "filename": "09_系统测试报告.docx",
+      "path": "docs/_artifacts/submission-20260525/09_系统测试报告.docx",
+      "size_bytes": 809287,
+      "sha256": "37c29eccc54351c7df49ab9c5a0a71ca100b7e949c36e9e477fb5c93cb80b049"
+    },
+    {
+      "key": "assignment_10_archive",
+      "filename": "10_项目最终归档包_不含数据集.zip",
+      "path": "docs/_artifacts/submission-20260525/10_项目最终归档包_不含数据集.zip",
+      "size_bytes": 71646683,
+      "sha256": "b43cf66bd7b656feffc5b89d93a362e5f2893c9206324df7293f304281920bb1"
+    },
+    {
+      "key": "manual",
+      "filename": "科创实战项目手册_训练进度安排.docx",
+      "path": "docs/_artifacts/submission-20260525/科创实战项目手册_训练进度安排.docx",
+      "size_bytes": 43679,
+      "sha256": "ae0a60390847414b69679163f109ee7998af1bdd9faa02d825ea59a605c4c444"
+    },
+    {
+      "key": "copy_text",
+      "filename": "提交说明-逐项复制.txt",
+      "path": "docs/_artifacts/submission-20260525/提交说明-逐项复制.txt",
+      "size_bytes": 2214,
+      "sha256": "6828090e087565c032f01898d991440f09da38641598032b6b10c1fffe29c98f"
+    }
+  ],
+  "zip_validation": {
+    "assignment_02_head_model": [],
+    "assignment_03_behavior_model": [],
+    "assignment_04_qt": [],
+    "assignment_05_backend": [],
+    "assignment_06_frontend": [],
+    "assignment_07_random_call": [],
+    "assignment_10_archive": []
+  }
+}
